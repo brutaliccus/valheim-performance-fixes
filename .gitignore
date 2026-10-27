@@ -1,0 +1,22 @@
+﻿# Build outputs
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+*.mdb
+*.nupkg
+
+# IDE / OS
+.vs/
+.idea/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Local path overrides / secrets
+*.local.*
+Directory.Build.props.user
+*.cfg
+refs/
