@@ -8,6 +8,7 @@ using HarmonyLib;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Scripting;
+using ValheimPerformanceFixes;
 
 namespace RenderTrim
 {
@@ -30,7 +31,9 @@ namespace RenderTrim
         internal static ConfigEntry<bool> partOn; internal static ConfigEntry<float> partDist; internal static ConfigEntry<bool> partFalloff; internal static ConfigEntry<bool> partPause;
         // GC
         ConfigEntry<bool> gcMenuOn; ConfigEntry<float> gcMenuMinOpen; ConfigEntry<float> gcHeadroomMB; ConfigEntry<float> gcMinGapSec; ConfigEntry<bool> gcIdleOn; ConfigEntry<float> gcIdleSec;
-        ConfigEntry<bool> gcSmartOn, gcSmartUi; ConfigEntry<float> gcSmartIdleSec, gcSmartGapSec, gcSmartHeadroomMB, gcSmartCombatRange, gcMoveEps; ConfigEntry<bool> warmOn, invPreOn, invPreCraft, invPreGc; ConfigEntry<float> invPreFallbackSec;
+        ConfigEntry<bool> gcIdlePlay; ConfigEntry<float> gcOwedMenuSec; ConfigEntry<int> invRealMax; // 2.3.4
+        ConfigEntry<bool> gcScreenOn; ConfigEntry<float> gcScreenMinMB, invRealSettleMs, invRealSettleFrameMs; ConfigEntry<int> invRealCount; // 2.3.5
+        ConfigEntry<bool> gcSmartOn, gcSmartUi, gcSmartUiPlay; ConfigEntry<float> gcSmartIdleSec, gcSmartGapSec, gcSmartHeadroomMB, gcSmartCombatRange, gcMoveEps; ConfigEntry<bool> warmOn, invPreOn, invPreCraft, invPreGc; ConfigEntry<float> invPreFallbackSec;
         // VPO unload deferral
         internal static ConfigEntry<bool> vpoDeferOn, deathLoad; static ConfigEntry<bool> invPreSplit, invPrePreGc; internal static ConfigEntry<float> vpoTeleportGrace;
         // Loot stacking
@@ -66,11 +69,12 @@ namespace RenderTrim
         int propIdx, partIdx, treeIdx;
         float[] savedLayerCull; Camera layerCam; float nextLayer;
         float origLodBias = -1; // unused since 1.7.4
-        internal const string Ver = "1.8.0"; // smartIdle HeadroomMB 64, MinGapSec 120; IdleSec floor 20; never move/combat
+        internal const string Ver = "2.1.0"; // smartIdle HeadroomMB 64, MinGapSec 120; IdleSec floor 20; never move/combat
         float baseBias = -1f, appliedBias = -1f;
         static ConfigEntry<bool> asOn, warmSpread; static ConfigEntry<float> asFps, asMinLod, asMinFar, asDown, asUp, asHold, asRecHold, asMargin;
         internal static float asLod = 1f, asFar = 1f; float asEma = -1f, asNext, asLowSince = -1f, asHighSince = -1f; int asFrames; float asAccum;
         float nextStats, nextCensus = 900f;
+        static ConfigEntry<bool> gcLogEach; long heapLastTick; float dtEma = -1f;
         int gcCountSeen; long usedAfterGc; float lastGcForced = -999f; int forcedMenu, forcedIdle, naturalGcs;
         float menuOpenedAt = -1f; Vector3 lastPos; float stillSince;
         internal static int statShadowOff, statPropCulledNow, statPartCulledNow, statPartPausedNow, statTagsReplaced;
@@ -82,7 +86,7 @@ namespace RenderTrim
             master = Config.Bind("0. General", "Enabled", true, "Master switch for every RenderTrim feature.");
             abKey = Config.Bind("0. General", "ABToggleKey", new KeyboardShortcut(KeyCode.F12, KeyCode.LeftControl), "Toggles ALL RenderTrim features off/on at runtime (A/B test). Each toggle is logged with a timestamp so FrameSpikeLogger 30 s summaries can be compared.");
             statsSec = Config.Bind("0. General", "StatsIntervalSec", 30f, "Seconds between RenderTrim stat lines in BepInEx\\RenderTrim.log.");
-            census = Config.Bind("0. General", "PrefabCensusOn", false, "1.4.0 (new key, old PrefabCensus is ignored): periodically log top prefabs by renderers / shadow casters / particle systems. Off by default: each census is a 35-45 ms spike.");
+            census = Config.Bind("0. General", "PrefabCensusOn", false, "New key, old PrefabCensus is ignored. Periodically log top prefabs by renderers / shadow casters / particle systems. Off by default: each census is a 35-45 ms spike.");
             censusSec = Config.Bind("0. General", "PrefabCensusIntervalSec", 900f, new ConfigDescription("Seconds between prefab census (min 900).", new AcceptableValueRange<float>(900f, 86400f)));
 
             shadowsOn = Config.Bind("1. Shadows", "SmallShadowsOff", true, "Disable shadow casting on small, non-skinned MeshRenderers of world objects (not characters, not items).");
@@ -94,29 +98,29 @@ namespace RenderTrim
             treePrefixes = Config.Bind("1b. Tree Shadows", "TreePrefixes", "Beech,Birch,Oak,Pine,Fir,Willow,SwampTree,Poplar,YggaShoot,Ashlands_tree,Ashlands_Tree", "Prefab name prefixes treated as trees (anything with a TreeBase component also counts). Stumps/logs are not TreeBase and not matched unless listed.");
             layerOn = Config.Bind("2. Layer Cull", "Enabled", true, "Apply per-layer camera cull distances (only ever lowers the distance; 0 in Unity means far clip).");
             layerSpec = Config.Bind("2. Layer Cull", "Distances", "Default_small=160,item=100,effect=100,piece_nonsolid=160", new ConfigDescription("layer=meters list (Default_small = bushes, rocks, small vegetation). Live: on change the camera's original distances are restored and the list re-applied. VPO sets Default_small=140.", null, new ConfigurationManagerAttributes { IsAdvanced = true }));
-            layerRaise = Config.Bind("2. Layer Cull", "AllowRaise", true, "1.6.0: set the listed layers to exactly the given distance, even if another mod (VPO) set them LOWER. Off = only ever lower (pre-1.6 behaviour).");
+            layerRaise = Config.Bind("2. Layer Cull", "AllowRaise", true, "Set the listed layers to exactly the given distance, even if another mod (VPO) set them LOWER. Off = only ever lower.");
 
             propOn = Config.Bind("3. Small Prop Cull", "Enabled", true, "Disable renderers (only renderers; colliders/ZDOs untouched) of small decorative props beyond Distance.");
             propDist = Config.Bind("3. Small Prop Cull", "Distance", 100f, new ConfigDescription("Meters from camera: props (pickables, ferns, bushes) are always SHOWN inside this range. Live: every tracked prop is re-evaluated on change. Lower = less GPU work, more visible pop-in.", new AcceptableValueRange<float>(30f, 300f)));
-            propHyst = Config.Bind("3. Small Prop Cull", "HideHysteresis", 15f, new ConfigDescription("1.6.0: a shown prop is only hidden again once it is Distance + this far away, so props at the edge do not flicker as you move.", new AcceptableValueRange<float>(0f, 60f)));
+            propHyst = Config.Bind("3. Small Prop Cull", "HideHysteresis", 15f, new ConfigDescription("A shown prop is only hidden again once it is Distance + this far away, so props at the edge do not flicker as you move.", new AcceptableValueRange<float>(0f, 60f)));
             propPickableMaxSize = Config.Bind("3. Small Prop Cull", "PickableMaxSize", 2f, new ConfigDescription("Pickables up to this size (m) are culled. Applies to objects created after the change.", new AcceptableValueRange<float>(0.5f, 10f), new ConfigurationManagerAttributes { IsAdvanced = true }));
             propPrefixes = Config.Bind("3. Small Prop Cull", "ExtraPrefixes", "ormbunke,BushGreen_bal,Pickable_", new ConfigDescription("Additional prefab name prefixes treated as decorative props. Applies to objects created after the change.", null, new ConfigurationManagerAttributes { IsAdvanced = true }));
 
-            grassOn = Config.Bind("3b. Grass", "Override", true, "1.6.0: take control of vanilla ClutterSystem grass (VPO hard-codes distance x0.85 and density x0.8 at startup). Off = put back what VPO/vanilla set (live).");
+            grassOn = Config.Bind("3b. Grass", "Override", true, "Take control of vanilla ClutterSystem grass (VPO hard-codes distance x0.85 and density x0.8 at startup). Off = put back what VPO/vanilla set (live).");
             grassDist = Config.Bind("3b. Grass", "Distance", 50f, new ConfigDescription("Grass/ground-clutter draw radius in meters (vanilla 40, VPO makes that 34). Live: grass is rebuilt on change. Each +10 m costs roughly +50% grass instances.", new AcceptableValueRange<float>(20f, 120f)));
             grassDensity = Config.Bind("3b. Grass", "DensityScale", 1f, new ConfigDescription("Multiplier on grass amount (vanilla m_amountScale). VPO already cut amounts to 80%, so 1.25 = vanilla density. Live.", new AcceptableValueRange<float>(0.25f, 2f)));
             grassPerFrame = Config.Bind("3b. Grass", "PatchesPerFrame", 3, new ConfigDescription("Vanilla builds ONE 8 m grass patch per frame, so when you move fast or after a terrain rebuild grass fills in visibly around you. Build up to this many per frame (nearest first).", new AcceptableValueRange<int>(1, 10), new ConfigurationManagerAttributes { IsAdvanced = true }));
 
-            lodFar = Config.Bind("3c. VPO Scene LOD", "FarDistanceOverride", 160f, new ConfigDescription("1.6.0: VPO forces every LODGroup (trees, rocks, bushes) to its lowest LOD and freezes it beyond 'Scene LOD Far Distance' (110 m). This overrides that distance live. 0 = leave VPO's value.", new AcceptableValueRange<float>(0f, 400f)));
+            lodFar = Config.Bind("3c. VPO Scene LOD", "FarDistanceOverride", 160f, new ConfigDescription("VPO forces every LODGroup (trees, rocks, bushes) to its lowest LOD and freezes it beyond 'Scene LOD Far Distance' (110 m). This overrides that distance live. 0 = leave VPO's value.", new AcceptableValueRange<float>(0f, 400f)));
 
-            cmbOn = Config.Bind("Combat Mode", "Enabled", true, "1.6.0: while in combat (alerted hostile within DetectRange, or you took/dealt damage recently) use the tighter ranges below to free GPU/CPU. Checked 4x per second. Values ease in/out over EaseSec; props are re-checked over 0.5 s so hiding is spread out.");
+            cmbOn = Config.Bind("Combat Mode", "Enabled", true, "While in combat (alerted hostile within DetectRange, or you took/dealt damage recently) use the tighter ranges below to free GPU/CPU. Checked 4x per second. Values ease in/out over EaseSec; props are re-checked over 0.5 s so hiding is spread out.");
             cmbDetect = Config.Bind("Combat Mode", "DetectRange", 30f, new ConfigDescription("Alerted hostile creatures within this many meters count as combat.", new AcceptableValueRange<float>(10f, 80f)));
             cmbExit = Config.Bind("Combat Mode", "ExitDelaySec", 5f, new ConfigDescription("Seconds without any combat signal before returning to normal ranges.", new AcceptableValueRange<float>(1f, 30f)));
             cmbEase = Config.Bind("Combat Mode", "EaseSec", 3f, new ConfigDescription("Seconds to blend between normal and combat ranges (both directions).", new AcceptableValueRange<float>(0.5f, 10f)));
             cmbProp = Config.Bind("Combat Mode", "PropDistance", 60f, new ConfigDescription("Small prop show distance in combat.", new AcceptableValueRange<float>(30f, 300f)));
             cmbTree = Config.Bind("Combat Mode", "TreeShadowDistance", 45f, new ConfigDescription("Tree shadow distance in combat.", new AcceptableValueRange<float>(20f, 300f)));
             cmbPart = Config.Bind("Combat Mode", "ParticleCullDistance", 50f, new ConfigDescription("Particle emission cull distance in combat.", new AcceptableValueRange<float>(20f, 300f)));
-            adOn = Config.Bind("Adaptive", "Enabled", true, "1.7.0: out of combat, shift prop distance between LenientRange (low load) and AggressiveRange (high load); tree-shadow and particle distances scale by the same ratio. Pressure 0..1 comes from SpawnBudget (pending objects/zones/locations, frame time, instance count) or, if SpawnBudget is absent, from frame time alone. While on, LenientRange replaces '3. Small Prop Cull/Distance'. Combat Mode tightens on top. NeverHideWithin is always respected.");
+            adOn = Config.Bind("Adaptive", "Enabled", true, "Out of combat, shift prop distance between LenientRange (low load) and AggressiveRange (high load); tree-shadow and particle distances scale by the same ratio. Pressure 0..1 comes from SpawnBudget (pending objects/zones/locations, frame time, instance count) or, if SpawnBudget is absent, from frame time alone. While on, LenientRange replaces '3. Small Prop Cull/Distance'. Combat Mode tightens on top. NeverHideWithin is always respected.");
     adLen = Config.Bind("Adaptive", "LenientRange", 120f, new ConfigDescription("Prop show distance at low pressure (near vanilla).", new AcceptableValueRange<float>(30f, 300f)));
     adAgg = Config.Bind("Adaptive", "AggressiveRange", 60f, new ConfigDescription("Prop show distance at high pressure.", new AcceptableValueRange<float>(30f, 300f)));
     adLow = Config.Bind("Adaptive", "LowPressure", 0.25f, new ConfigDescription("Pressure at/below which LenientRange is used.", new AcceptableValueRange<float>(0f, 1f)));
@@ -131,40 +135,44 @@ namespace RenderTrim
             partFalloff = Config.Bind("4. Particles", "RateFalloff", true, "Lerp emission rate to 40% toward the cull distance (VPO behaviour).");
             partPause = Config.Bind("4. Particles", "PauseCulledLooping", true, "Also Pause() culled looping systems once they have no live particles (saves simulation); resumed on approach.");
 
-            gcMenuOn = Config.Bind("5. GC", "CollectInMenus", true, "Run a GC only behind a genuinely blocking screen (pause/ESC menu or popup, game paused, loading screen) if the heap grew by HeadroomMB since the last GC. Since 1.2.0 never for inventory, containers/tombstones, map, chat or console (you can still be hit while those are open).");
+            gcMenuOn = Config.Bind("5. GC", "CollectInMenus", true, "Run a GC only behind a genuinely blocking screen (pause/ESC menu or popup, game paused, loading screen) if the heap grew by HeadroomMB since the last GC. Never for inventory, containers/tombstones, map, chat or console (you can still be hit while those are open).");
             gcMenuMinOpen = Config.Bind("5. GC", "MenuMinOpenSec", 1.5f, "The blocking screen must have been up continuously this long before a collection (hysteresis; avoids GCs on a quick ESC tap).");
-            gcHeadroomMB = Config.Bind("5. GC", "HeadroomMB", 96f, "Minimum growth since last GC before an opportunistic collection.");
+            gcHeadroomMB = Config.Bind("5. GC", "HeadroomMB", 128f, "Minimum growth since last GC before an opportunistic collection. Default 128.");
+            gcLogEach = Config.Bind("5. GC", "LogEveryGc", true, "Write a line to RenderTrim.log for every garbage collection, also the ones the game (or another mod) runs on its own, with the frame time it caused and the heap before and after. Forced ones were always logged.");
             gcMinGapSec = Config.Bind("5. GC", "MinGapSec", 20f, "Minimum seconds between forced collections.");
             gcIdleOn = Config.Bind("5. GC", "CollectWhenIdle", false, "Also collect after standing still for IdleSec (off by default).");
             gcIdleSec = Config.Bind("5. GC", "IdleSec", 4f, "");
 
-            gcSmartOn = Config.Bind("5b. Smart GC", "Enabled", true, "1.8.0: clean up memory only at genuinely quiet moments so it never freezes gameplay. Never while moving (horizontal speed above MoveEpsilon), never in combat, and only after IdleSec of real stillness (or with map/inventory open). Needs heap growth above HeadroomMB and is rate-limited by MinGapSec. Loading-screen / teleport GCs are separate and unchanged. Off = no smart clean-ups.");
-            gcSmartIdleSec = Config.Bind("5b. Smart GC", "IdleSec", 20f, new ConfigDescription("1.8.0: seconds of genuine stillness (no position change and horizontal speed below MoveEpsilon) before a smart clean-up may run. Default 20; Quick Setup preset never lowers this floor. Never during move/combat.", new AcceptableValueRange<float>(5f, 120f)));
-            gcSmartGapSec = Config.Bind("5b. Smart GC", "MinGapSec", 120f, new ConfigDescription("1.8.0: minimum seconds between smart clean-ups (and since any forced clean-up). Default 120. Higher = fewer freezes while exploring.", new AcceptableValueRange<float>(15f, 600f)));
-            gcSmartHeadroomMB = Config.Bind("5b. Smart GC", "HeadroomMB", 64f, "1.8.0: only run a smart clean-up if the heap has grown by at least this many MB since the last GC. Default 64 so small drifts while exploring do not trigger freezes.");
+            gcSmartOn = Config.Bind("5b. Smart GC", "Enabled", true, "Clean up memory only at genuinely quiet moments so it never freezes gameplay. Never while moving (horizontal speed above MoveEpsilon), never in combat, and only after IdleSec of real stillness (or with map/inventory open). Needs heap growth above HeadroomMB and is rate-limited by MinGapSec. Loading-screen / teleport GCs are separate and unchanged. Off = no smart clean-ups.");
+            gcSmartIdleSec = Config.Bind("5b. Smart GC", "IdleSec", 20f, new ConfigDescription("Seconds of genuine stillness (no position change and horizontal speed below MoveEpsilon) before a smart clean-up may run. Default 20; Quick Setup preset never lowers this floor. Never during move/combat.", new AcceptableValueRange<float>(5f, 120f)));
+            gcSmartGapSec = Config.Bind("5b. Smart GC", "MinGapSec", 120f, new ConfigDescription("Minimum seconds between smart clean-ups (and since any forced clean-up). Default 120. Higher = fewer freezes while exploring.", new AcceptableValueRange<float>(15f, 600f)));
+            gcSmartHeadroomMB = Config.Bind("5b. Smart GC", "HeadroomMB", 96f, "Only run a smart clean-up if the heap has grown by at least this many MB since the last GC. Default 96 so small drifts while exploring do not trigger freezes.");
             gcSmartCombatRange = Config.Bind("5b. Smart GC", "CombatRange", 40f, "No smart GC while an alerted monster is within this many metres, or for 10 s after taking damage.");
             gcSmartUi = Config.Bind("5b. Smart GC", "AllowInMapOrInventory", true, "Also allow a smart GC while the large map or inventory is open (still not in combat, still not while moving).");
-            gcMoveEps = Config.Bind("5b. Smart GC", "MoveEpsilon", 0.15f, new ConfigDescription("1.7.9: horizontal speed (m/s) above this counts as moving â€” smart GC never runs while moving. Small enough that standing still / tiny drift still counts as idle.", new AcceptableValueRange<float>(0.05f, 2f)));
-            warmOn = Config.Bind("9. UI Warm-up", "WarmupCanvases", true, "1.3.0: once per session, while the loading screen is still opaque, activate the large map root for one frame-internal pass (SetActive true -> Canvas.ForceUpdateCanvases -> SetActive false, nothing is ever rendered) and force a canvas update for the inventory, so the first real open does not pay the whole layout/mesh rebuild.");
-            invPreOn = Config.Bind("9. UI Warm-up", "InventoryPreload", true, "1.4.0: once per session, AFTER the local Player exists (ideally while the loading screen is still black, otherwise ~1 s after spawn), build the player inventory grid invisibly by calling InventoryGui.UpdateInventory(player) (the same path a real open uses, including other mods' patches), then Canvas.ForceUpdateCanvases. Never calls Show/Hide: no sounds, cursor or state changes. The inventory root is made active with a CanvasGroup alpha 0 / no raycasts only if it was inactive, and restored exactly.");
-            invPreCraft = Config.Bind("9. UI Warm-up", "InventoryPreloadCraftingPanel", false, "1.4.0: also run InventoryGui.UpdateCraftingPanel during the preload (builds the recipe list). Off by default: other mods patch it and it touches tab state.");
-            invPreGc = Config.Bind("9. UI Warm-up", "InventoryPreloadGc", false, "IGNORED since 1.4.1: the preload never forces a GC.");
-            invPreFallbackSec = Config.Bind("9. UI Warm-up", "InventoryPreloadFallbackSec", 1f, "1.4.0: if the loading screen is already gone when the Player appears, run the preload this many seconds after spawn (only if not in combat and inventory closed).");
+            gcSmartUiPlay = Config.Bind("5b. Smart GC", "MapOrInventoryGcDuringPlay", false, "Needs AllowInMapOrInventory. Off (default) = the map / inventory clean-up is not run while you play (it froze the game for about 200 ms with the map or inventory open); it is run behind the next loading / teleport / respawn screen instead, where nobody sees it. On = the old behaviour (run it while the map or inventory is open).");
+            gcIdlePlay = Config.Bind("5b. Smart GC", "IdleGcDuringPlay", false, "Off (default) = the clean-up after standing still (this section's IdleSec, and 5. GC CollectWhenIdle) is not run while you play with the world visible (it froze the game for about 200 ms); it is run behind the next loading / teleport / respawn screen instead, or under the pause menu after OwedGcUnderMenuSec. If no such screen comes it is skipped (the game still cleans up on its own when it has to). On = the old behaviour.");
+            gcOwedMenuSec = Config.Bind("5b. Smart GC", "OwedGcUnderMenuSec", 5f, new ConfigDescription("A map / inventory or idle clean-up that was not run during play may also run once the pause (ESC) menu has been open this many seconds. 0 = only behind loading / teleport / respawn screens.", new AcceptableValueRange<float>(0f, 60f)));
+            gcMoveEps = Config.Bind("5b. Smart GC", "MoveEpsilon", 0.15f, new ConfigDescription("Horizontal speed (m/s) above this counts as moving â€” smart GC never runs while moving. Small enough that standing still / tiny drift still counts as idle.", new AcceptableValueRange<float>(0.05f, 2f)));
+            warmOn = Config.Bind("9. UI Warm-up", "WarmupCanvases", true, "Once per session, while the loading screen is still opaque, activate the large map root for one frame-internal pass (SetActive true -> Canvas.ForceUpdateCanvases -> SetActive false, nothing is ever rendered) and force a canvas update for the inventory, so the first real open does not pay the whole layout/mesh rebuild.");
+            invPreOn = Config.Bind("9. UI Warm-up", "InventoryPreload", true, "Once per session, AFTER the local Player exists (ideally while the loading screen is still black, otherwise ~1 s after spawn), build the player inventory grid invisibly by calling InventoryGui.UpdateInventory(player) (the same path a real open uses, including other mods' patches), then Canvas.ForceUpdateCanvases. Never calls Show/Hide: no sounds, cursor or state changes. The inventory root is made active with a CanvasGroup alpha 0 / no raycasts only if it was inactive, and restored exactly.");
+            invPreCraft = Config.Bind("9. UI Warm-up", "InventoryPreloadCraftingPanel", false, "Also run InventoryGui.UpdateCraftingPanel during the preload (builds the recipe list). Off by default: other mods patch it and it touches tab state.");
+            invPreGc = Config.Bind("9. UI Warm-up", "InventoryPreloadGc", false, "IGNORED: the preload never forces a GC.");
+            invPreFallbackSec = Config.Bind("9. UI Warm-up", "InventoryPreloadFallbackSec", 1f, "If the loading screen is already gone when the Player appears, run the preload this many seconds after spawn (only if not in combat and inventory closed).");
             vpoDeferOn = Config.Bind("7. VPO Unload", "DeferVpoAssetUnload", true, "Hold back ValheimPerformanceOverhaul's periodic Resources.UnloadUnusedAssets (GCPatches.TriggerSafeAssetUnload every 300 s, VPOMemoryManager cleanup every 10 min; 370-410 ms freezes) while you are in the world, and run it instead on a loading screen, right after a teleport/respawn, or behind a blocking menu. Vanilla's own unloads are untouched.");
-            vpoInMenu = Config.Bind("7. VPO Unload", "RunInPauseMenu", false, "1.7.0: also run deferred VPO cleanup behind the pause menu. Off by default: the 20261025 log showed a 675 ms freeze (VPOMemoryManager.CleanupCoroutine + forced GC) in the ESC menu, and multiplayer keeps running behind it. When off, deferred cleanup runs only on loading screens (teleport/portal/respawn).");
-        bgLoad = Config.Bind("8. Streaming", "InWorldBackgroundLoadingLow", true, "1.7.0: in world, set Application.backgroundLoadingPriority=Low (max ~2 ms/frame of async asset integration instead of 10-50 ms); High on loading screens. Targets the EarlyUpdate 65-107 ms hitches while traveling.");
-        deathLoad = Config.Bind("7. VPO Unload", "DeathScreenCountsAsLoading", false, "1.7.7: false = the death screen (dead player, including its fade to black) is NOT a loading screen, so deferred VPO cleanup and the forced menu GC do not fire there (22:11 log: 636 ms GC + cleanup while dead); they run on the real respawn/teleport loading screen instead. true = 1.7.6 behaviour.");
+            vpoInMenu = Config.Bind("7. VPO Unload", "RunInPauseMenu", false, "Also run deferred VPO cleanup behind the pause menu. Off by default: the 20261025 log showed a 675 ms freeze (VPOMemoryManager.CleanupCoroutine + forced GC) in the ESC menu, and multiplayer keeps running behind it. When off, deferred cleanup runs only on loading screens (teleport/portal/respawn).");
+        bgLoad = Config.Bind("8. Streaming", "InWorldBackgroundLoadingLow", true, "In world, set Application.backgroundLoadingPriority=Low (max ~2 ms/frame of async asset integration instead of 10-50 ms); High on loading screens. Targets the EarlyUpdate 65-107 ms hitches while traveling.");
+        deathLoad = Config.Bind("7. VPO Unload", "DeathScreenCountsAsLoading", false, "False = the death screen (dead player, including its fade to black) is NOT a loading screen, so deferred VPO cleanup and the forced menu GC do not fire there (22:11 log: 636 ms GC + cleanup while dead); they run on the real respawn/teleport loading screen instead. true = the death screen counts as a loading screen.");
         vpoTeleportGrace = Config.Bind("7. VPO Unload", "TeleportGraceSec", 3f, "Seconds after a teleport/respawn finishes during which a pending/teleport unload may still run.");
             stackOn = Config.Bind("8. Loot Stacking", "EarlyAutoStack", true, "Use vanilla's own ItemDrop auto-stack (same item, same quality, within 4 m, only drops YOU own, never exceeds the max stack) when more than StackThreshold drops exist instead of vanilla's 200. Item counts are unchanged; it only merges piles into fewer physics objects (each loose drop costs a Rigidbody + ZSyncTransform).");
             stackThreshold = Config.Bind("8. Loot Stacking", "StackThreshold", 60, new ConfigDescription("Loose ItemDrop count above which auto-stacking runs (vanilla 200).", new AcceptableValueRange<int>(10, 200)));
-            terrainSnapOn = Config.Bind("8. Loot Stacking", "VanillaItemTerrainSnap", true, "1.7.3: run vanilla 1.0.20 ItemDrop.TerrainCheck (a drop more than 0.5 m below the terrain is moved to terrain + 0.5 m and stopped) instead of FiresGhettoNetworking's Fix Ground Snap Through Floors raycast, which treats ore veins and cliffs as ground (mined ore stuck under the surface, thrown onto the vein top or up a cliff). A drop resting on a building piece or ship (layers piece/vehicle only) is left alone. Live. Off = FGN/vanilla behaviour unchanged. Independent of the A/B key.");
+            terrainSnapOn = Config.Bind("8. Loot Stacking", "VanillaItemTerrainSnap", true, "Run the vanilla ItemDrop.TerrainCheck (a drop more than 0.5 m below the terrain is moved to terrain + 0.5 m and stopped) instead of FiresGhettoNetworking's Fix Ground Snap Through Floors raycast, which treats ore veins and cliffs as ground (mined ore stuck under the surface, thrown onto the vein top or up a cliff). A drop resting on a building piece or ship (layers piece/vehicle only) is left alone. Live. Off = FGN/vanilla behaviour unchanged. Independent of the A/B key.");
 
             propDist.SettingChanged += (a, b) => propDirty = true; propHyst.SettingChanged += (a, b) => propDirty = true;
             layerSpec.SettingChanged += (a, b) => layerDirty = true; layerRaise.SettingChanged += (a, b) => layerDirty = true; layerOn.SettingChanged += (a, b) => layerDirty = true;
             grassOn.SettingChanged += (a, b) => grassDirty = true; grassDist.SettingChanged += (a, b) => grassDirty = true; grassDensity.SettingChanged += (a, b) => grassDirty = true;
             lodFar.SettingChanged += (a, b) => nextVpoLod = 0f;
             lodMul = Config.Bind("6. LOD", "LodBiasMultiplier", 1f, "Multiplies QualitySettings.lodBias (1 = unchanged; 0.8 = LODs switch ~20% earlier).");
-            asOn = Config.Bind("6b. Auto Scale", "Enabled", true, "1.7.4: when the smoothed FPS stays below TargetFps, step lodBias and the VPO Scene LOD far distance down (to at most the Min scales), and step back up once FPS recovers. Held while loading, behind black/blocking screens and with no player.");
+            asOn = Config.Bind("6b. Auto Scale", "Enabled", true, "When the smoothed FPS stays below TargetFps, step lodBias and the VPO Scene LOD far distance down (to at most the Min scales), and step back up once FPS recovers. Held while loading, behind black/blocking screens and with no player.");
             asFps = Config.Bind("6b. Auto Scale", "TargetFps", 45f, new ConfigDescription("Scale down while the smoothed FPS is below this.", new AcceptableValueRange<float>(20f, 144f)));
             asMinLod = Config.Bind("6b. Auto Scale", "MinLodBiasScale", 0.6f, new ConfigDescription("Lowest lodBias scale auto-scaling may reach.", new AcceptableValueRange<float>(0.3f, 1f)));
             asMinFar = Config.Bind("6b. Auto Scale", "MinFarDistanceScale", 0.7f, new ConfigDescription("Lowest VPO far-distance scale auto-scaling may reach.", new AcceptableValueRange<float>(0.3f, 1f)));
@@ -173,16 +181,51 @@ namespace RenderTrim
             asHold = Config.Bind("6b. Auto Scale", "HoldSec", 2f, new ConfigDescription("FPS must stay low this long before each step down.", new AcceptableValueRange<float>(0.5f, 30f)));
             asRecHold = Config.Bind("6b. Auto Scale", "RecoverHoldSec", 5f, new ConfigDescription("FPS must stay above TargetFps x RecoverFpsMargin this long before each step up.", new AcceptableValueRange<float>(1f, 60f)));
             asMargin = Config.Bind("6b. Auto Scale", "RecoverFpsMargin", 1.15f, new ConfigDescription("Recovery threshold multiplier on TargetFps (hysteresis).", new AcceptableValueRange<float>(1f, 2f)));
-            invPreSplit = Config.Bind("9. UI Warm-up", "InventoryPreloadSplit", true, "1.7.7 (needs SpreadOverFrames): split the inventory preload over two frames: Show/Hide (crafting setup, ~250 ms) and the grid/stats/canvas pass (~200 ms), instead of one ~460 ms frame.");
-            invPrePreGc = Config.Bind("9. UI Warm-up", "InventoryPreloadPreGc", true, "1.7.7 (needs SpreadOverFrames): if the loading screen is still black, run one GC on its own frame right before the inventory preload, so a natural GC (heap 700+ MB) does not land inside the preload frame (20:32 log: 1683 ms frame = preload + GC). Never runs when the screen is visible.");
-            warmSpread = Config.Bind("9. UI Warm-up", "SpreadOverFrames", true, "1.7.4: run the warm-up steps (map, inventory preload, final canvas pass) on separate frames instead of one long frame; the final canvas pass is skipped unless the loading screen is still black.");
+            invPreSplit = Config.Bind("9. UI Warm-up", "InventoryPreloadSplit", true, "Needs SpreadOverFrames. Split the inventory preload over two frames: Show/Hide (crafting setup, ~250 ms) and the grid/stats/canvas pass (~200 ms), instead of one ~460 ms frame.");
+            invPrePreGc = Config.Bind("9. UI Warm-up", "InventoryPreloadPreGc", true, "Needs SpreadOverFrames. If the loading screen is still black, run one GC on its own frame right before the inventory preload, so a natural GC (heap 700+ MB) does not land inside the preload frame (20:32 log: 1683 ms frame = preload + GC). Never runs when the screen is visible.");
+            warmSpread = Config.Bind("9. UI Warm-up", "SpreadOverFrames", true, "Run the warm-up steps (map, inventory preload, final canvas pass) on separate frames instead of one long frame; the final canvas pass is skipped unless the loading screen is still black.");
+            holdBlackSec = Config.Bind("9. UI Warm-up", "HoldLoadingScreenSec", 1.5f, new ConfigDescription("Needs SpreadOverFrames + InventoryPreload. When you spawn, keep the loading screen black for up to this many seconds until the inventory warm-up (steps 2b to 3) has finished, so those steps never run on frames you can see. 0 = off.", new AcceptableValueRange<float>(0f, 5f)));
+            warmRedo = Config.Bind("9. UI Warm-up", "RedoBehindNextLoadingScreen", true, "If part of the inventory warm-up still had to run with the world visible, run one full invisible inventory pass plus the final canvas pass behind the next loading / teleport screen.");
+            invFxPre = Config.Bind("9. UI Warm-up", "PreCreateOpenEffects", true, "During the warm-up, make one hidden copy of the inventory open / close / move effects and remove it again, so the first real open does not have to load them.");
+            glyphFix = Config.Bind("9. UI Warm-up", "FixMissingDiamondGlyph", true, "Some item texts use the character \u25C8 (a diamond with a dot) that the game font does not have; every time such a text is drawn the font and all its fallbacks are searched and a warning is written to the log. On = that character is drawn with a similar diamond the font does have.");
+            invRealOn = Config.Bind("9. UI Warm-up", "RealOpenBehindLoadingScreen", true, "Needs HoldLoadingScreenSec. After the invisible warm-up, open the inventory for real for a few frames while the black loading screen still covers it (sounds and effects muted), then close it. The game then draws it once for real (fonts, icons, layout), which the invisible pass cannot do, so the first time you press Tab no longer freezes the game. Done again behind a later teleport / respawn screen if it could not run at spawn and you have not opened the inventory yet.");
+            invRealFrames = Config.Bind("9. UI Warm-up", "RealOpenFrames", 3, new ConfigDescription("How many drawn frames RealOpenBehindLoadingScreen keeps the inventory open behind the black screen (at least).", new AcceptableValueRange<int>(1, 10)));
+            invRealMax = Config.Bind("9. UI Warm-up", "RealOpenMaxFrames", 6, new ConfigDescription("The real open stays longer than RealOpenFrames while the inventory panels' layout is still being rebuilt (measured each frame), up to this many frames, so the whole rebuild happens behind the black screen.", new AcceptableValueRange<int>(1, 20)));
+            holdSync = Config.Bind("9. UI Warm-up", "HoldForDropNSpawnSync", true, "Only with DropNSpawn installed. When you spawn, also keep the loading screen black while DropNSpawn is still applying the rules synced from the server (its game-data refresh / payload / snapshots), at most HoldForSyncMaxSec, so the freezes it causes a few seconds after spawn happen behind the black screen. The DropNSpawn module's RunSyncBehindLoadingScreen lets that work run at once meanwhile.");
+            holdSyncMax = Config.Bind("9. UI Warm-up", "HoldForSyncMaxSec", 5f, new ConfigDescription("Most extra seconds HoldForDropNSpawnSync keeps the loading screen black (after the inventory warm-up). 0 = off.", new AcceptableValueRange<float>(0f, 15f)));
+            glyphDyn = Config.Bind("9. UI Warm-up", "DiamondGlyphFromFontFiles", true, "Needs FixMissingDiamondGlyph. Most game fonts make their characters at run time from a font file; ask those fonts to add the real \u25C8 character, or else a similar diamond, from their font file.");
+            glyphFallback = Config.Bind("9. UI Warm-up", "DiamondGlyphFallbackFont", true, "Needs FixMissingDiamondGlyph. Fonts that still cannot show \u25C8 get a fallback font made from a system symbol font (Segoe UI Symbol on Windows) that has it.");
+            glyphReplace = Config.Bind("9. UI Warm-up", "DiamondGlyphReplaceInTexts", true, "Needs FixMissingDiamondGlyph. Last resort: in texts whose font still cannot show \u25C8 it is replaced by a similar character (\u25C6 or *), so no warning is logged. Each warning that still appears is counted in STATS (glyph warnings=, target 0).");
+            spawnHoldFrames = Config.Bind("9. UI Warm-up", "SpawnHoldFrames", 15, new ConfigDescription("After the spawn warm-up (and the DropNSpawn wait), keep the loading screen black for at least this many more frames, so other mods' set-up when your character appears (an 82 ms frame in earlier logs) runs behind it. Whichever of SpawnHoldFrames / SpawnHoldSec ends later counts, at most 2 s. Both 0 = off. First spawn of each game start only.", new AcceptableValueRange<int>(0, 120)));
+            spawnHoldPending = Config.Bind("9. UI Warm-up", "SpawnHoldPendingBelow", 50, new ConfigDescription("The spawn hold also waits until fewer than this many nearby objects are still waiting to be created (SpawnBudget's count), up to SpawnHoldMaxSec. 0 = do not wait for objects.", new AcceptableValueRange<int>(0, 5000)));
+            spawnHoldMax = Config.Bind("9. UI Warm-up", "SpawnHoldMaxSec", 3f, new ConfigDescription("The most seconds a spawn or teleport hold keeps the screen black (was a fixed 2 s).", new AcceptableValueRange<float>(0.5f, 10f)));
+            spawnHoldTp = Config.Bind("9. UI Warm-up", "SpawnHoldAfterTeleports", true, "Run the same hold (frames, seconds, waiting objects) when a teleport ends, before the screen fades in.");
+            rewarmSec = Config.Bind("9. UI Warm-up", "RewarmAfterArrivalSec", 4f, new ConfigDescription("This many seconds after you arrive (spawn or teleport), on a calm frame (no inventory open, not in combat, frame under 25 ms), warm the inventory grid once more so the first open after travel is not slow. 0 = off.", new AcceptableValueRange<float>(0f, 60f)));
+            spawnHoldSec = Config.Bind("9. UI Warm-up", "SpawnHoldSec", 0.5f, new ConfigDescription("The same hold in seconds (see SpawnHoldFrames).", new AcceptableValueRange<float>(0f, 2f)));
+            holdMaxSec = Config.Bind("9. UI Warm-up", "HoldLoadingScreenMaxSec", 4f, new ConfigDescription("Needs HoldLoadingScreenSec above 0. HoldLoadingScreenSec now counts only normal frame time (one long freeze such as a big memory clean-up counts as 0.1 s at most), so it is not used up by a single long frame. While warm-up steps are still left the screen stays black for at most this many real seconds in total.", new AcceptableValueRange<float>(1f, 10f)));
+            gcScreenOn = Config.Bind("5. GC", "CollectBehindEveryScreen", true, "Run one clean-up behind every loading / teleport / respawn screen (once per screen, while it is fully black) when the heap grew by at least ScreenMinGrowMB since the last clean-up, without waiting for HeadroomMB or MinGapSec. It is never seen, and you arrive with a clean heap, so the first clean-up during play comes later. Not on the death screen. Off = only when the heap grew by HeadroomMB.");
+            gcScreenMinMB = Config.Bind("5. GC", "ScreenMinGrowMB", 16f, new ConfigDescription("Needs CollectBehindEveryScreen. The smallest heap growth since the last clean-up for which the clean-up behind a screen is run (below that there is nothing worth cleaning).", new AcceptableValueRange<float>(0f, 256f)));
+            invRealSettleMs = Config.Bind("9. UI Warm-up", "RealOpenSettledMs", 0.3f, new ConfigDescription("The real open behind the black screen counts as settled once the inventory layout pass of a frame takes at most this many ms and that frame is not slow (RealOpenSettledFrameMs); until then it stays open, up to RealOpenMaxFrames.", new AcceptableValueRange<float>(0.05f, 5f)));
+            invRealSettleFrameMs = Config.Bind("9. UI Warm-up", "RealOpenSettledFrameMs", 25f, new ConfigDescription("The frame in which the real open counts as settled must also have taken at most this many ms (the first drawn frames of the open inventory are slow while its fonts, icons and materials are first drawn). 0 = do not look at the frame time.", new AcceptableValueRange<float>(0f, 200f)));
+            invRealCount = Config.Bind("9. UI Warm-up", "RealOpenCount", 2, new ConfigDescription("How many times the inventory is opened for real behind the black spawn screen (one after the other, each until settled). The second open goes through the whole open path again with everything already loaded, so what other mods do on each open is warm too. 1 = open once.", new AcceptableValueRange<int>(1, 3)));
+            DefaultsBump235();
+            statsLogOff = Config.Bind("19. Log Filter", "HideStatsPrintout", true, "The game writes the whole player statistics page (\"Difficulty Category: RawStats ...\", hundreds of lines) to the log every time the compendium / texts page is refreshed during play. On = that printout is not written to the log (the page itself is unchanged). Off = vanilla.");
 
             vpoTagType = AccessTools.TypeByName("ValheimEngineOptimizer.Modules.VPOParticleOptimizerTag");
             try { log = new StreamWriter(Path.Combine(Paths.BepInExRootPath, "RenderTrim.log"), false) { AutoFlush = true }; } catch { }
             L("RenderTrim " + Ver + " start; vpoTag=" + (vpoTagType != null) + " gcIncremental=" + SafeInc() + " gcMode=" + GarbageCollector.GCMode + " lodBias=" + QualitySettings.lodBias);
-            harmony = new Harmony(GUID); ModThrottles.Bind(Config); Prewarm.Bind(Config); Preset.Bind(Config, L); LocalStore.Bind(Config, L); AnimFix.Init(Config, harmony); try { DropFix.Init(Config, harmony, L); } catch (Exception e) { L("[Drop Fixes] init failed: " + e.Message); }
+            gcSliceOn = Config.Bind("5. GC", "SmallIncrementalSlice", false, "When Unity's incremental garbage collector is on (it is in Valheim), give it a smaller piece of each frame (IncrementalSliceMs instead of Unity's 3 ms), so its work is spread thinner over more frames. Its last step can still take longer on its own. Off = Unity's own slice. Default off (testing showed the 1 ms slice made the game's own clean-up frames longer, most over 33 ms); a saved true is moved to false once.");
+            GcSliceBump238();
+            gcSliceMs = Config.Bind("5. GC", "IncrementalSliceMs", 1f, new ConfigDescription("Needs SmallIncrementalSlice. The incremental garbage collector's time per frame, in ms.", new AcceptableValueRange<float>(0.25f, 3f)));
+            gcSliceOn.SettingChanged += (s, e) => GcSliceApply(); gcSliceMs.SettingChanged += (s, e) => GcSliceApply(); GcSliceApply();
+            harmony = new Harmony(GUID); ModThrottles.Bind(Config); Prewarm.Bind(Config); Preset.Bind(Config, L); LocalStore.Bind(Config, L); AnimFix.Init(Config, harmony); try { Travel.Init(Config, harmony, L); } catch (Exception e) { L("[Travel] init failed: " + e.Message); } try { DropFix.Init(Config, harmony, L); } catch (Exception e) { L("[Drop Fixes] init failed: " + e.Message); } try { Extras.Init(Config, harmony, L); } catch (Exception e) { L("[Extras] init failed: " + e.Message); }
             harmony.PatchAll(typeof(Patches)); try { harmony.PatchAll(typeof(GrassBoost)); } catch (Exception e) { L("grass patch FAILED: " + e.Message); } Combat.Init(harmony);
             AudioRoute.Init(this, harmony);
+            try { harmony.Patch(AccessTools.DeclaredMethod(typeof(InventoryGui), "Show"), prefix: new HarmonyMethod(typeof(InvPreload), nameof(InvPreload.ShowTimePre)) { priority = Priority.First }, postfix: new HarmonyMethod(typeof(InvPreload), nameof(InvPreload.ShowTimePost)) { priority = Priority.Last - 1 }); } catch (Exception e) { L("inventory open timer patch FAILED: " + e.Message); }
+            try { var hm = AccessTools.DeclaredMethod(typeof(InventoryGui), "Hide"); if (hm != null) harmony.Patch(hm, prefix: new HarmonyMethod(typeof(InvPreload), nameof(InvPreload.HidePre)) { priority = Priority.First }); else L("inventory close hold: InventoryGui.Hide not found"); } catch (Exception e) { L("inventory close hold patch FAILED: " + e.Message); }
+            try { harmony.Patch(AccessTools.DeclaredMethod(typeof(Hud), "UpdateBlackScreen"), prefix: new HarmonyMethod(typeof(Plugin), nameof(HudBlackPre))); } catch (Exception e) { L("loading screen hold patch FAILED: " + e.Message); }
+            LogFilter.Init(harmony, L); GlyphFix.Init(harmony, L); InvSplit.Init(Config, harmony, L);
+            Overlap.SetOurs(Feature.AutoScale, () => asOn != null && asOn.Value && Active);
             try { harmony.Patch(AccessTools.DeclaredMethod(typeof(InventoryGui), "Show"), postfix: new HarmonyMethod(typeof(InvPreload), nameof(InvPreload.ShowPost)) { priority = Priority.Last }); } catch (Exception e) { L("inventory first-open safety patch FAILED: " + e.Message); }
             VpoUnload.Init(harmony);
             try { harmony.Patch(AccessTools.DeclaredMethod(typeof(ItemDrop), "SlowUpdate"), postfix: new HarmonyMethod(typeof(LootStack), nameof(LootStack.Post))); L("loot auto-stack patch ok"); }
@@ -195,7 +238,31 @@ namespace RenderTrim
         internal float BlockingFor() => menuOpenedAt < 0 ? 0f : Time.unscaledTime - menuOpenedAt;
 
         static string SafeInc() { try { return GarbageCollector.isIncremental.ToString(); } catch { return "?"; } }
+        // 2.3.7: incremental GC time slice
+        static ConfigEntry<bool> gcSliceOn; static ConfigEntry<float> gcSliceMs; static ulong gcSliceOrig; static bool gcSliceSaved; static string gcSliceState = "-";
+        void GcSliceApply()
+        {
+            try
+            {
+                if (!GarbageCollector.isIncremental) { gcSliceState = "incremental GC not available"; L("GC slice: Unity's incremental garbage collector is not on in this build, slice left alone"); return; }
+                if (!gcSliceSaved) { gcSliceOrig = GarbageCollector.incrementalTimeSliceNanoseconds; gcSliceSaved = true; }
+                ulong want = gcSliceOn.Value ? (ulong)(Mathf.Clamp(gcSliceMs.Value, 0.25f, 3f) * 1000000f) : gcSliceOrig;
+                GarbageCollector.incrementalTimeSliceNanoseconds = want;
+                gcSliceState = (gcSliceOn.Value ? "small " : "Unity's ") + (want / 1000000.0).ToString("0.00") + " ms (Unity's was " + (gcSliceOrig / 1000000.0).ToString("0.00") + ")";
+                L("GC slice: incremental garbage collector time per frame " + gcSliceState);
+            }
+            catch (Exception e) { gcSliceState = "failed: " + e.Message; L("GC slice could not be set: " + e.Message); }
+        }
+        // 2.3.7: natural (not forced) collections while the world is visible: how long those frames were
+        static int gcWorldN, gcWorldOver; static double gcWorldMax, gcWorldSum;
+        internal static string GcStats237()
+        {
+            string s = "gcSlice " + gcSliceState + " | naturalGcFramesInWorld n=" + gcWorldN + " over33ms=" + gcWorldOver + " max=" + gcWorldMax.ToString("0") + "ms avg=" + (gcWorldN > 0 ? (gcWorldSum / gcWorldN).ToString("0") : "-") + "ms";
+            gcWorldN = gcWorldOver = 0; gcWorldMax = gcWorldSum = 0; return s;
+        }
 
+        // file only (no BepInEx console line), for frequent lines
+        internal void LFile(string s) { try { log?.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + " " + s); } catch { } }
         internal void L(string s)
         {
             string line = DateTime.Now.ToString("HH:mm:ss.fff") + " " + s;
@@ -213,6 +280,7 @@ namespace RenderTrim
             }
             if (!described) { described = true; try { Preset.Describe(Config); Config.Save(); LocalStore.Start(); } catch (Exception e) { L("describe failed: " + e.Message); } }
             Preset.Tick();
+            try { Overlap.Tick(); } catch { }
             if (master.Value && !abOff) { try { Prewarm.Tick(this, HudBlack()); } catch (Exception e) { L("Prewarm tick failed: " + e.Message); } }
             GcTick();
             VpoUnload.Tick();
@@ -294,9 +362,13 @@ namespace RenderTrim
 
         static void RestoreTrees() { foreach (var t in trees) if (t.trimmed) SetTree(t, false); }
 
+        static bool grassWantSeen, asVpoHeld, lcLowerOnly; // 2.3.0 Mod Overlap state
+
         void TreeTick(Vector3 cp)
         {
-            if (!treeOn.Value) { if (treesWereOn) { RestoreTrees(); treesWereOn = false; } return; }
+            Overlap.OurTreeShadowDistance = treeDist.Value;
+            // 2.3.0 Mod Overlap: VPO's shadow budget already ends every shadow at or before our tree distance
+            if (!treeOn.Value || Overlap.Yield(Feature.TreeShadows)) { if (treesWereOn) { RestoreTrees(); treesWereOn = false; } return; }
             treesWereOn = true;
             if (trees.Count == 0) return;
             int n = Mathf.Clamp(Mathf.CeilToInt(trees.Count * Time.unscaledDeltaTime / 1f), 1, trees.Count);
@@ -333,6 +405,7 @@ namespace RenderTrim
         static void RegisterParticles(GameObject go)
         {
             if (!partOn.Value || vpoTagType == null) return;
+            if (Overlap.Yield(Feature.Particles)) return; // 2.3.0 Mod Overlap: VPO's particle optimizer keeps its own tags
             var tags = go.GetComponentsInChildren(vpoTagType, true);
             foreach (var tag in tags)
             {
@@ -349,6 +422,9 @@ namespace RenderTrim
         {
             if (layerDirty) { layerDirty = false; nextLayer = 0f; if (layerCam != null && savedLayerCull != null) try { layerCam.layerCullDistances = (float[])savedLayerCull.Clone(); } catch { } }
             if (!layerOn.Value) return;
+            // 2.3.0 Mod Overlap: VPO's render optimizer sets layer distances too; then only ever lower them (AllowRaise treated as off)
+            bool lo = Overlap.Yield(Feature.LayerCull);
+            if (lo != lcLowerOnly) { lcLowerOnly = lo; if (layerCam != null && savedLayerCull != null && layerRaise.Value) { layerDirty = true; return; } }
             if (cam == layerCam && Time.unscaledTime < nextLayer) return;
             nextLayer = Time.unscaledTime + 2f;
             float[] d = cam.layerCullDistances;
@@ -359,7 +435,7 @@ namespace RenderTrim
                 var kv = e.Split('='); if (kv.Length != 2) continue;
                 int layer = LayerMask.NameToLayer(kv[0].Trim()); if (layer < 0) continue;
                 if (!float.TryParse(kv[1].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float m) || m <= 0) continue;
-                if (layerRaise.Value ? d[layer] != m : (d[layer] == 0f || d[layer] > m)) { d[layer] = m; changed = true; }
+                if (layerRaise.Value && !lcLowerOnly ? d[layer] != m : (d[layer] == 0f || d[layer] > m)) { d[layer] = m; changed = true; }
             }
             if (changed) cam.layerCullDistances = d;
         }
@@ -400,8 +476,11 @@ namespace RenderTrim
             var cs = ClutterSystem.instance;
             if (cs == null) { grassApplied = false; grassFor = null; return; }
             if (cs != grassFor) { grassFor = cs; grassApplied = false; grassOrigDist = cs.m_distance; grassOrigScale = cs.m_amountScale; grassDirty = true; }
-            bool want = Active && grassOn.Value;
-            GrassBoost.perFrame = want ? grassPerFrame.Value : 1;
+            bool spread = Active && grassOn.Value;
+            GrassBoost.perFrame = spread ? grassPerFrame.Value : 1;
+            // 2.3.0 Mod Overlap: VPO's vegetation optimizer owns grass distance/density; the spread-out rebuild stays
+            bool want = spread && !Overlap.Yield(Feature.Grass);
+            if (want != grassWantSeen) { grassWantSeen = want; grassDirty = true; }
             if (!grassDirty && want == grassApplied) return;
             grassDirty = false;
             try
@@ -426,7 +505,8 @@ namespace RenderTrim
             {
                 float cur = (float)vpoLodField.GetValue(null);
                 if (vpoLodOrig < 0f) vpoLodOrig = cur;
-                float bse = lodFar.Value > 0f ? lodFar.Value : vpoLodOrig; float want = Active ? (asFar < 0.999f ? Mathf.Round(bse * asFar / 10f) * 10f : bse) : vpoLodOrig;
+                // 2.3.0 Mod Overlap: keep VPO's own far distance (Auto Scale still scales it)
+                float bse = lodFar.Value > 0f && !Overlap.Yield(Feature.SceneLod) ? lodFar.Value : vpoLodOrig; float want = Active ? (asFar < 0.999f ? Mathf.Round(bse * asFar / 10f) * 10f : bse) : vpoLodOrig;
                 if (Mathf.Abs(cur - want) > 0.01f) { vpoLodField.SetValue(null, want); L("VPO Scene LOD far distance " + cur.ToString("0") + " -> " + want.ToString("0") + " m"); }
             }
             catch { }
@@ -482,7 +562,11 @@ namespace RenderTrim
             if (hold) { asLowSince = asHighSince = -1f; asEma = -1f; return; }
             asEma = asEma < 0f ? fps : asEma * 0.6f + fps * 0.4f;
             if (asEma < asFps.Value) { asHighSince = -1f; if (asLowSince < 0f) asLowSince = t;
-                if (t - asLowSince >= asHold.Value && (asLod > asMinLod.Value + 0.001f || asFar > asMinFar.Value + 0.001f)) { asLowSince = t;
+                // 2.3.0 Mod Overlap: while VPO's adaptive resolution can still lower its render scale, let it go first
+                bool vpoFirst = false; float vCur = 1f, vMin = 0f;
+                if (Overlap.Yield(Feature.AutoScale) && Overlap.VpoScaleAboveMin(out vCur, out vMin)) vpoFirst = true;
+                if (vpoFirst != asVpoHeld) { asVpoHeld = vpoFirst; L(vpoFirst ? "AutoScale holds: VPO adaptive resolution is at " + vCur.ToString("0.00") + " (minimum " + vMin.ToString("0.00") + "), it lowers resolution first" : "AutoScale hold released: VPO adaptive resolution is at its minimum or not scaling"); }
+                if (!vpoFirst && t - asLowSince >= asHold.Value && (asLod > asMinLod.Value + 0.001f || asFar > asMinFar.Value + 0.001f)) { asLowSince = t;
                     asLod = Mathf.Max(asMinLod.Value, asLod - asDown.Value); asFar = Mathf.Max(asMinFar.Value, asFar - asDown.Value); nextVpoLod = 0f;
                     L("AutoScale DOWN fps=" + asEma.ToString("0.0") + " < " + asFps.Value.ToString("0") + ": lodScale=" + asLod.ToString("0.00") + " farScale=" + asFar.ToString("0.00")); } }
             else if (asEma >= asFps.Value * asMargin.Value) { asLowSince = -1f; if (asHighSince < 0f) asHighSince = t;
@@ -494,8 +578,22 @@ namespace RenderTrim
 
         void GcTick()
         {
-            int cnt = GC.CollectionCount(0);
-            if (cnt != gcCountSeen) { if (gcCountSeen != 0) naturalGcs += cnt - gcCountSeen; gcCountSeen = cnt; usedAfterGc = GC.GetTotalMemory(false); }
+            int cnt = GC.CollectionCount(0); float dtNow = Time.unscaledDeltaTime * 1000f;
+            if (cnt != gcCountSeen) {
+                long after = GC.GetTotalMemory(false);
+                if (gcCountSeen != 0) {
+                    naturalGcs += cnt - gcCountSeen;
+                    // 2.1.1: a GC this mod did not force. It ran in the previous frame (dt now = length of that frame).
+                    float est = dtEma > 0f ? Mathf.Max(0f, dtNow - dtEma) : dtNow;
+                    bool world = false; try { world = Player.m_localPlayer != null && !BlockingScreen(); } catch { }
+                    if (world) { gcWorldN++; gcWorldSum += dtNow; if (dtNow > gcWorldMax) gcWorldMax = dtNow; if (dtNow > 33f) gcWorldOver++; }
+                    global::ValheimPerformanceFixes.FrameCost.Add("GC", est, "not forced by this mod", -1);
+                    if (gcLogEach != null && gcLogEach.Value) LFile("GC (not forced by this mod) #" + naturalGcs + ": that frame took " + dtNow.ToString("0") + " ms (usual " + (dtEma > 0f ? dtEma.ToString("0") : "?") + " ms, so about " + est.ToString("0") + " ms for the GC), heap " + (heapLastTick >> 20) + " -> " + (after >> 20) + " MB");
+                }
+                gcCountSeen = cnt; usedAfterGc = after;
+            }
+            else if (dtNow < 100f) dtEma = dtEma < 0f ? dtNow : dtEma + (dtNow - dtEma) * 0.05f;
+            heapLastTick = GC.GetTotalMemory(false);
             if (!I.master.Value || abOff) return;
             float t = Time.unscaledTime;
             bool menu = BlockingScreen();
@@ -508,19 +606,23 @@ namespace RenderTrim
             }
             if (pl != null) { float hp = pl.GetHealth(); if (hp < lastHp - 0.01f) lastHitAt = t; lastHp = hp; }
             WarmTick();
+            try { GlyphFix.useDynamic = glyphDyn.Value; GlyphFix.useFallback = glyphFallback.Value; GlyphFix.useReplace = glyphFix.Value && glyphReplace.Value; if (glyphFix.Value) GlyphFix.Tick(L); } catch { }
+            if (Overlap.Yield(Feature.Gc)) return; // 2.3.0 Mod Overlap: VPO's GC control decides when to collect
+            if (ScreenGcTick(t, pl)) return;
             if (SmartGcTick(t, pl)) return;
             if (t - lastGcForced < gcMinGapSec.Value) return;
             long grown = GC.GetTotalMemory(false) - usedAfterGc;
             if (grown < (long)(gcHeadroomMB.Value * 1048576f)) return;
             string why = null;
             if (gcMenuOn.Value && menu && t - menuOpenedAt >= gcMenuMinOpen.Value) why = "menu:" + blockingWhy;
-            else if (gcIdleOn.Value && pl != null && t - stillSince > gcIdleSec.Value && !pl.InAttack() && pl.IsOnGround()) { bool mv=false; try { var v=pl.GetVelocity(); float eps=gcMoveEps!=null?gcMoveEps.Value:0.15f; mv=v.x*v.x+v.z*v.z>eps*eps; } catch { mv=true; } if (!mv) why = "idle"; }
+            else if (gcIdleOn.Value && pl != null && t - stillSince > gcIdleSec.Value && !pl.InAttack() && pl.IsOnGround()) { bool mv=false; try { var v=pl.GetVelocity(); float eps=gcMoveEps!=null?gcMoveEps.Value:0.15f; mv=v.x*v.x+v.z*v.z>eps*eps; } catch { mv=true; } if (!mv) { if (gcIdlePlay.Value || LoadingScreen()) why = "idle"; else IdleOwed(grown, "idle"); } }
             if (why == null) return;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             GC.Collect();
             sw.Stop();
             lastGcForced = t; gcCountSeen = GC.CollectionCount(0); usedAfterGc = GC.GetTotalMemory(false);
-            if (why.StartsWith("menu")) forcedMenu++; else forcedIdle++;
+            gcUiOwed = gcIdleOwed = false; // any forced clean-up pays what was owed
+            if (why.StartsWith("menu")) forcedMenu++; else forcedIdle++; global::ValheimPerformanceFixes.FrameCost.Add("GC", sw.Elapsed.TotalMilliseconds, "forced " + why); heapLastTick = usedAfterGc;
             L("GC forced (" + why + ") grown=" + (grown >> 20) + "MB took=" + sw.ElapsedMilliseconds + "ms heapAfter=" + (usedAfterGc >> 20) + "MB");
         }
 
@@ -549,7 +651,22 @@ namespace RenderTrim
             bool ui = false;
             try { ui = (Minimap.instance != null && Minimap.instance.m_mode == Minimap.MapMode.Large) || InventoryGui.IsVisible(); } catch { }
             if (ui) { if (uiOpenedAt < 0) uiOpenedAt = t; } else uiOpenedAt = -1f;
-            if (!gcSmartOn.Value || pl == null || LoadingScreen()) return false;
+            if (!ui) gcUiOwedCounted = false;
+            if (t - stillSince < 1f) gcIdleOwedCounted = false; // moved again: a new idle stretch
+            if (!gcSmartOn.Value || pl == null) return false;
+            if (LoadingScreen())
+            {
+                pauseSince = -1f;
+                // 2.3.3: the map / inventory clean-up that was not run during play is run here, behind the loading / teleport screen
+                // 2.3.4: the same for the idle clean-up
+                if (!(gcUiOwed || gcIdleOwed) || pl.IsDead() || t - lastGcForced < 5f) return false;
+                return RunOwedGc(t, false);
+            }
+            // 2.3.4: or under the pause menu once it has been open OwedGcUnderMenuSec
+            bool owed = gcUiOwed || gcIdleOwed, pm = false;
+            if (owed && gcOwedMenuSec.Value > 0f) { try { pm = Menu.IsVisible(); } catch { } }
+            if (pm) { if (pauseSince < 0f) pauseSince = t; if (t - pauseSince >= gcOwedMenuSec.Value && t - lastGcForced >= 5f) return RunOwedGc(t, true); }
+            else pauseSince = -1f;
             if (t - lastGcForced < gcSmartGapSec.Value) return false;
             long grown = GC.GetTotalMemory(false) - usedAfterGc;
             if (grown < (long)(gcSmartHeadroomMB.Value * 1048576f)) return false;
@@ -562,14 +679,296 @@ namespace RenderTrim
             if (idle) why = "smartIdle";
             else if (gcSmartUi.Value && ui && !moving && t - uiOpenedAt >= gcMenuMinOpen.Value) why = "smartUi";
             if (why == null || InCombat(pl, t)) return false;
+            if (why == "smartIdle" && !gcIdlePlay.Value) { IdleOwed(grown, "smartIdle"); return false; }
+            if (why == "smartUi" && (gcSmartUiPlay == null || !gcSmartUiPlay.Value))
+            {
+                gcUiOwed = true; if (!gcUiOwedCounted) { gcUiOwedCounted = true; sGcUiDeferred++; L("GC (smartUi) not run during play: grown=" + (grown >> 20) + "MB, it runs behind the next loading / teleport screen"); }
+                return false;
+            }
             var sw = System.Diagnostics.Stopwatch.StartNew();
             GC.Collect();
             sw.Stop();
-            lastGcForced = t; gcCountSeen = GC.CollectionCount(0); usedAfterGc = GC.GetTotalMemory(false); forcedSmart++;
+            lastGcForced = t; gcCountSeen = GC.CollectionCount(0); usedAfterGc = GC.GetTotalMemory(false); forcedSmart++; global::ValheimPerformanceFixes.FrameCost.Add("GC", sw.Elapsed.TotalMilliseconds, "forced " + why); heapLastTick = usedAfterGc;
             L("GC forced (" + why + ") grown=" + (grown >> 20) + "MB took=" + sw.ElapsedMilliseconds + "ms heapAfter=" + (usedAfterGc >> 20) + "MB");
             return true;
         }
+        // ---- 2.3.5: one clean-up behind every loading / teleport / respawn screen ----
+        bool screenGcSeen; float screenGcSince = -1f; static int sScreenGc, sScreenGcSmall, sScreenGcRecent; static long sScreenGcMs;
+        bool ScreenGcTick(float t, Player pl)
+        {
+            if (gcScreenOn == null || !gcScreenOn.Value) return false;
+            if (!HudBlack() || pl == null) { screenGcSeen = false; screenGcSince = -1f; return false; }
+            if (screenGcSince < 0f) screenGcSince = t;
+            // once per screen; not on the death screen; the spawn screen's warm-up has its own clean-up (step 2d) while it runs
+            if (screenGcSeen || pl.IsDead() || !warmDone || t - screenGcSince < 0.3f || InvPreload.realActive) return false;
+            screenGcSeen = true;
+            long grown = GC.GetTotalMemory(false) - usedAfterGc;
+            if (t - lastGcForced < 3f) { sScreenGcRecent++; L("GC behind this screen skipped: a clean-up ran " + (t - lastGcForced).ToString("0.0") + " s ago"); return false; }
+            if (grown < (long)(gcScreenMinMB.Value * 1048576f)) { sScreenGcSmall++; L("GC behind this screen skipped: heap grew only " + (grown >> 20) + "MB since the last clean-up (ScreenMinGrowMB=" + gcScreenMinMB.Value.ToString("0") + ")"); return false; }
+            bool owed = gcUiOwed || gcIdleOwed;
+            var sw = System.Diagnostics.Stopwatch.StartNew(); GC.Collect(); sw.Stop();
+            lastGcForced = t; gcCountSeen = GC.CollectionCount(0); usedAfterGc = GC.GetTotalMemory(false); heapLastTick = usedAfterGc; forcedMenu++;
+            if (gcUiOwed) sGcUiBehind++; if (gcIdleOwed) sGcIdleBehind++;
+            gcUiOwed = gcIdleOwed = false; sScreenGc++; sScreenGcMs += sw.ElapsedMilliseconds;
+            global::ValheimPerformanceFixes.FrameCost.Add("GC", sw.Elapsed.TotalMilliseconds, "forced behind screen");
+            L("GC forced (behind loading / teleport / respawn screen) grown=" + (grown >> 20) + "MB took=" + sw.ElapsedMilliseconds + "ms heapAfter=" + (usedAfterGc >> 20) + "MB" + (owed ? " (also pays the clean-up owed from play)" : ""));
+            return true;
+        }
+        // 2.3.5: one-time move of settings whose default changed (same marker file as the SpawnBudget part)
+        void DefaultsBump235()
+        {
+            try
+            {
+                var p = Path.Combine(Application.persistentDataPath, "HitchFix.defaults.txt");
+                var done = File.Exists(p) ? new List<string>(File.ReadAllLines(p)) : new List<string>();
+                const string key = "2.3.5 RealOpenMaxFrames 6->10";
+                if (done.Contains(key)) return;
+                if (invRealMax.Value == 6) { invRealMax.Value = 10; L("setting moved to the new default: RealOpenMaxFrames 6 -> 10 (one time only; set it again in the config if you want 6)"); }
+                done.Add(key); File.WriteAllLines(p, done.ToArray());
+            }
+            catch (Exception e) { L("default update check failed: " + e.Message); }
+        }
+        // 2.3.8: SmallIncrementalSlice default true -> false, moved once (same marker file)
+        void GcSliceBump238()
+        {
+            try
+            {
+                var p = Path.Combine(Application.persistentDataPath, "HitchFix.defaults.txt");
+                var done = File.Exists(p) ? new List<string>(File.ReadAllLines(p)) : new List<string>();
+                const string key = "2.3.8 SmallIncrementalSlice true->false";
+                if (done.Contains(key)) return;
+                if (gcSliceOn.Value) { gcSliceOn.Value = false; L("setting moved to the new default: SmallIncrementalSlice true -> false, Unity's own GC slice is used again (one time only; set it again in the config if you want the small slice)"); }
+                done.Add(key); File.WriteAllLines(p, done.ToArray());
+            }
+            catch (Exception e) { L("default update check failed: " + e.Message); }
+        }
+        // the RenderTrim part of the SpawnBudget "2.3.8:" stats line
+        internal static string Stats238()
+        {
+            string s = "gcSlice " + gcSliceState + " | spawnHold runs=" + sSpawnHolds + (sSpawnHolds > 0 ? " frames=" + sSpawnHoldFrames + " sec=" + sSpawnHoldSec.ToString("0.00") + " longestHeldFrame=" + sSpawnHoldMaxMs.ToString("0") + "ms" : "") + " | " + InvSplit.Stats();
+            return s; // 2.3.9: counters are cumulative now (the per-interval reset showed runs=0 after the one spawn)
+        }
+        // the "2.3.5:" part of the SpawnBudget stats line
+        internal static string Stats235()
+        {
+            string s = "gc behindEveryScreen ran=" + sScreenGc + (sScreenGc > 0 ? " avg=" + (sScreenGcMs / sScreenGc) + "ms" : "") + " skippedSmall=" + sScreenGcSmall + " skippedJustRan=" + sScreenGcRecent
+                + " | realOpen " + InvPreload.Stats235() + " | " + GlyphFix.Stats235();
+            sScreenGc = sScreenGcSmall = sScreenGcRecent = 0; sScreenGcMs = 0;
+            return s;
+        }
+        // ---- 2.3.4: clean-ups owed from play (idle and map / inventory), run behind a screen ----
+        bool gcIdleOwed, gcIdleOwedCounted, glyphEarly; float pauseSince = -1f;
+        static int sGcIdleDeferred, sGcIdleBehind, sGcOwedMenu, sGcOwedSkipped;
+        void IdleOwed(long grown, string what)
+        {
+            gcIdleOwed = true;
+            if (gcIdleOwedCounted) return;
+            gcIdleOwedCounted = true; sGcIdleDeferred++;
+            L("GC (" + what + ") not run during play: grown=" + (grown >> 20) + "MB, it runs behind the next loading / teleport screen" + (gcOwedMenuSec.Value > 0f ? " or after " + gcOwedMenuSec.Value.ToString("0") + " s under the pause menu" : ""));
+        }
+        bool RunOwedGc(float t, bool underMenu)
+        {
+            bool ui0 = gcUiOwed, idle0 = gcIdleOwed; gcUiOwed = gcIdleOwed = false;
+            string what = ui0 && idle0 ? "smartUi+smartIdle" : ui0 ? "smartUi" : "smartIdle";
+            string where = underMenu ? "under the pause menu" : "behind loading screen";
+            long g2 = GC.GetTotalMemory(false) - usedAfterGc;
+            if (g2 < (long)(gcSmartHeadroomMB.Value * 1048576f)) { sGcOwedSkipped++; L("GC (" + what + ", " + where + ") skipped: heap grew only " + (g2 >> 20) + "MB since the last clean-up"); return false; }
+            var sw2 = System.Diagnostics.Stopwatch.StartNew(); GC.Collect(); sw2.Stop();
+            lastGcForced = t; gcCountSeen = GC.CollectionCount(0); usedAfterGc = GC.GetTotalMemory(false); forcedSmart++; heapLastTick = usedAfterGc;
+            if (underMenu) sGcOwedMenu++; else { if (ui0) sGcUiBehind++; if (idle0) sGcIdleBehind++; }
+            global::ValheimPerformanceFixes.FrameCost.Add("GC", sw2.Elapsed.TotalMilliseconds, "forced " + what + " " + where);
+            L("GC forced (" + what + ", " + where + ") grown=" + (g2 >> 20) + "MB took=" + sw2.ElapsedMilliseconds + "ms heapAfter=" + (usedAfterGc >> 20) + "MB");
+            return true;
+        }
+        // the "2.3.4:" part of the SpawnBudget stats line
+        internal static string Stats234()
+        {
+            var p = I;
+            string s = "idleGc notDuringPlay=" + sGcIdleDeferred + " behindScreen=" + sGcIdleBehind + " | owedGc underPauseMenu=" + sGcOwedMenu + " skippedSmallHeap=" + sGcOwedSkipped + (p != null ? " owedNow=" + (p.gcUiOwed ? "ui" : "") + (p.gcIdleOwed ? "idle" : "") + (!p.gcUiOwed && !p.gcIdleOwed ? "none" : "") : "")
+                + " | realOpen " + InvPreload.Stats234() + " | glyph cachedStepBeforeInventory=" + (p != null && p.glyphEarly ? "ran" : "not yet");
+            sGcIdleDeferred = sGcIdleBehind = sGcOwedMenu = sGcOwedSkipped = 0;
+            return s;
+        }
         float playerSeenAt = -1f; bool invPreloaded, described;
+        // 2.3.1: loading-screen hold / redo / effects / glyph
+        internal ConfigEntry<float> holdBlackSec; internal ConfigEntry<bool> warmRedo, invFxPre, glyphFix; internal static ConfigEntry<bool> statsLogOff;
+        float holdSince = -1f; bool holdTimedOut, holdLogged, warmVisible, redoPending; int warmTickFrame = -10;
+        // 2.3.2: real inventory open behind the black screen; hold for DropNSpawn's sync
+        internal ConfigEntry<bool> invRealOn, holdSync, glyphDyn, glyphFallback, glyphReplace; internal ConfigEntry<int> invRealFrames; internal ConfigEntry<float> holdSyncMax;
+        // 2.3.3: hold budget counted in normal frame time, with a hard cap; glyph step 2f; real-open hold; smartUi GC moved behind screens
+        internal ConfigEntry<float> holdMaxSec; float holdEff, realHoldSince = -1f; int holdEffFrame = -1; bool holdExtLogged, glyphDone, glyphDeferred, gcUiOwed, gcUiOwedCounted;
+        static int sHoldExtended, sGlyphDeferred, sGcUiDeferred, sGcUiBehind, sRealRedo, sRealTries; static double sHoldWall;
+        // the "2.3.3:" part of the SpawnBudget stats line
+        internal static string Stats233()
+        {
+            var p = I; string s = "hold extended=" + sHoldExtended + " gaveUpAfter=" + (sHoldWall > 0 ? sHoldWall.ToString("0.0") + "s" : "-") + (p != null ? " normalFrameTime=" + p.holdEff.ToString("0.0") + "s" : "")
+                + " | realOpen redo=" + sRealRedo + " gameCloseHeldOff=" + InvPreload.TakeBlockedHides() + (p != null ? " pending=" + p.realPending : "")
+                + " | smartUiGc notDuringPlay=" + sGcUiDeferred + " behindScreen=" + sGcUiBehind
+                + " | glyph putOff=" + sGlyphDeferred + " " + GlyphFix.CacheStats();
+            sHoldExtended = sGlyphDeferred = sGcUiDeferred = sGcUiBehind = sRealRedo = 0;
+            return s;
+        }
+        bool realDone, realPending, holdOver, syncLogged, sawWorld; float syncSince = -1f; int realRound;
+        // true = the loading screen should stay black this frame (checked by the Hud.UpdateBlackScreen prefix)
+        internal static bool WantHoldBlack() { var p = I; return p != null && p.HoldBlackNow(); }
+        bool HoldBlackNow()
+        {
+            if (holdBlackSec == null || !master.Value || abOff) return false;
+            float t = Time.unscaledTime;
+            // 2.3.3: while the inventory is really open behind the black screen, keep it black (at most 1 s) so it is never seen
+            // 2.3.4: at most 2.5 s (the real open can now last up to RealOpenMaxFrames while its layout is rebuilt)
+            if (InvPreload.realActive)
+            {
+                if (realHoldSince < 0f) realHoldSince = t;
+                if (t - realHoldSince <= 2.5f) return true;
+            }
+            else realHoldSince = -1f;
+            // 2.3.9: a new world session gets its own DropNSpawn wait and spawn hold (2.3.8 held only once per game start)
+            var gNow = Game.instance;
+            if (gNow != holdGame) { holdGame = gNow; holdOver = false; sawWorld = false; syncSince = -1f; syncLogged = false; syncReported = false; spawnHoldDone = false; spawnHoldSince = -1f; holdKind = "spawn"; tpSeen = tpHolding = false; }
+            if (holdOver)
+            {
+                // 2.3.9: the same hold when a teleport ends
+                if (tpSeen)
+                {
+                    if (spawnHoldTp != null && spawnHoldTp.Value)
+                    {
+                        if (!tpHolding) { tpHolding = true; spawnHoldDone = false; spawnHoldSince = -1f; holdKind = "teleport"; }
+                        if (SpawnHoldWants(t)) { global::ValheimPerformanceFixes.SyncWatch.MarkHolding(); return true; }
+                    }
+                    tpSeen = false; tpHolding = false;
+                }
+                return false;
+            }
+            bool warmWants = holdBlackSec.Value > 0f && !warmDone && !holdTimedOut && invPreOn.Value && warmSpread.Value && Time.frameCount - warmTickFrame <= 2;
+            if (warmWants)
+            {
+                if (holdSince < 0f) holdSince = t;
+                // 2.3.3: the budget counts normal frame time only (one long frame counts 0.1 s at most); the hard cap is in real seconds
+                if (holdEffFrame != Time.frameCount) { holdEffFrame = Time.frameCount; holdEff += Mathf.Min(Time.unscaledDeltaTime, 0.1f); }
+                float cap = holdMaxSec != null ? Mathf.Max(holdMaxSec.Value, holdBlackSec.Value) : holdBlackSec.Value;
+                if (!holdExtLogged && t - holdSince > holdBlackSec.Value && holdEff <= holdBlackSec.Value) { holdExtLogged = true; sHoldExtended++; L("loading screen hold: extended past " + holdBlackSec.Value.ToString("0.0") + " s because long frames (e.g. a memory clean-up) used the time; warm-up steps are still left (at most " + cap.ToString("0.0") + " s in total)"); }
+                if (holdEff > holdBlackSec.Value || t - holdSince > cap) { holdTimedOut = true; sHoldWall = t - holdSince; L("loading screen hold: gave up after " + (t - holdSince).ToString("0.0") + " s (" + holdEff.ToString("0.0") + " s of normal frame time), the rest of the warm-up runs with the world visible"); }
+                else
+                {
+                    if (!holdLogged) { holdLogged = true; L("loading screen hold: keeping the screen black until the inventory warm-up is done (at most " + holdBlackSec.Value.ToString("0.0") + " s)"); }
+                    global::ValheimPerformanceFixes.SyncWatch.MarkHolding(); return true;
+                }
+            }
+            if (!warmDone && !holdTimedOut && invPreOn.Value && warmSpread.Value && holdBlackSec.Value > 0f) return false; // warm-up not driven this frame: decide later
+            // 2.3.2: then, once per game start and only behind the first spawn screen, wait for DropNSpawn's start-up sync (capped)
+            if (sawWorld && syncSince < 0f) { holdOver = true; tpSeen = false; return false; }
+            if (!syncReported && holdSync != null && holdSync.Value && holdSyncMax.Value > 0f && global::ValheimPerformanceFixes.SyncWatch.Busy != null)
+            {
+                if (syncSince < 0f) syncSince = t;
+                bool busy = global::ValheimPerformanceFixes.SyncWatch.IsBusy();
+                if (busy && t - syncSince <= holdSyncMax.Value)
+                {
+                    if (!syncLogged) { syncLogged = true; L("loading screen hold: waiting for DropNSpawn's sync to finish (" + global::ValheimPerformanceFixes.SyncWatch.BusyWhat() + "; at most " + holdSyncMax.Value.ToString("0.0") + " s more)"); }
+                    global::ValheimPerformanceFixes.SyncWatch.MarkHolding(); return true;
+                }
+                float extra = t - syncSince; global::ValheimPerformanceFixes.SyncWatch.holdExtraSec += extra;
+                if (syncLogged) L(busy ? "loading screen hold: stopped waiting for DropNSpawn after " + extra.ToString("0.0") + " s (still busy: " + global::ValheimPerformanceFixes.SyncWatch.BusyWhat() + ")" : "loading screen hold: DropNSpawn's sync finished after " + extra.ToString("0.0") + " s extra");
+                else L("loading screen hold: DropNSpawn had no sync work left, no extra wait");
+                syncReported = true; sDnsLogs++; // 2.3.9: once per screen (2.3.8 repeated it every held frame)
+            }
+            // 2.3.8: a few more black frames after spawn, so other mods' on-spawn set-up (an 82 ms frame in the 2.3.7 logs) runs hidden
+            if (SpawnHoldWants(t)) { global::ValheimPerformanceFixes.SyncWatch.MarkHolding(); return true; }
+            holdOver = true; tpSeen = false; return false;
+        }
+        // ---- 2.3.8: spawn hold ----
+        static ConfigEntry<int> spawnHoldFrames, spawnHoldPending; static ConfigEntry<float> spawnHoldSec, spawnHoldMax, rewarmSec; static ConfigEntry<bool> spawnHoldTp;
+        float spawnHoldSince = -1f; int spawnHoldFrame0, spawnHoldLastFrame; float spawnHoldMaxMs; bool spawnHoldDone; bool pendWaitCounted; string holdKind = "spawn";
+        static int sSpawnHolds, sSpawnHoldFrames, sTpHolds, sPendWaits, sPendMax, sDnsLogs, sRewarms; static float sSpawnHoldMaxMs, sSpawnHoldSec, sRewarmMs; // 2.3.9: cumulative for the session
+        bool tpSeen, tpHolding, syncReported; Game holdGame;
+        // the RenderTrim part of the "2.3.9:" stats line
+        internal static string Stats239()
+        {
+            return "spawnHold runs=" + sSpawnHolds + " teleportHolds=" + sTpHolds + " waitedForObjects=" + sPendWaits + (sPendMax > 0 ? " mostWaiting=" + sPendMax : "") + (sSpawnHolds + sTpHolds > 0 ? " frames=" + sSpawnHoldFrames + " sec=" + sSpawnHoldSec.ToString("0.00") + " longestHeldFrame=" + sSpawnHoldMaxMs.ToString("0") + "ms" : "")
+                + " | rewarm runs=" + sRewarms + (sRewarms > 0 ? " avg=" + (sRewarmMs / sRewarms).ToString("0") + "ms" : "") + " | dnsSyncLines=" + sDnsLogs;
+        }
+        static int PendingNow() { int f = global::SpawnBudgetPressure.PendingFrame; return Time.frameCount - f <= 10 ? global::SpawnBudgetPressure.PendingNear : -1; }
+        bool SpawnHoldWants(float t)
+        {
+            if (spawnHoldDone || spawnHoldFrames == null) return false;
+            int nf = spawnHoldFrames.Value; float ns = spawnHoldSec.Value; int pb = spawnHoldPending != null ? spawnHoldPending.Value : 0;
+            float cap = spawnHoldMax != null ? spawnHoldMax.Value : 2f;
+            if (nf <= 0 && ns <= 0f && pb <= 0) { spawnHoldDone = true; return false; }
+            int f = Time.frameCount; int pend = PendingNow(); bool pendWait = pb > 0 && pend >= pb;
+            if (pend > sPendMax) sPendMax = pend;
+            if (spawnHoldSince < 0f) { spawnHoldSince = t; spawnHoldFrame0 = f; spawnHoldLastFrame = f; spawnHoldMaxMs = 0f; pendWaitCounted = false; L(holdKind + " hold: keeping the screen black for " + nf + " frames / " + ns.ToString("0.00") + " s (whichever is later" + (pb > 0 ? ", and until fewer than " + pb + " objects wait (now " + (pend < 0 ? "unknown" : pend.ToString()) + ")" : "") + ", at most " + cap.ToString("0.0") + " s) so other mods' set-up runs hidden"); return true; }
+            if (f != spawnHoldLastFrame) { spawnHoldLastFrame = f; spawnHoldMaxMs = Mathf.Max(spawnHoldMaxMs, Time.unscaledDeltaTime * 1000f); }
+            int done = f - spawnHoldFrame0; float el = t - spawnHoldSince;
+            if (pendWait && done >= nf && el >= ns && !pendWaitCounted) { pendWaitCounted = true; sPendWaits++; }
+            if ((done >= nf && el >= ns && !pendWait) || el > cap)
+            {
+                spawnHoldDone = true; if (holdKind == "teleport") sTpHolds++; else sSpawnHolds++; sSpawnHoldFrames += done; sSpawnHoldSec += el; sSpawnHoldMaxMs = Mathf.Max(sSpawnHoldMaxMs, spawnHoldMaxMs);
+                arrivedAt = Time.unscaledTime; rewarmDone = false;
+                L(holdKind + " hold: done after " + done + " frames / " + el.ToString("0.00") + " s" + (el > cap ? " (" + cap.ToString("0.0") + " s cap" + (pendWait ? ", " + pend + " objects still waiting" : "") + ")" : "") + (pendWaitCounted && el <= cap ? " (waited for objects)" : "") + ", longest frame while held " + spawnHoldMaxMs.ToString("0.0") + " ms");
+                return false;
+            }
+            return true;
+        }
+        static bool HudBlackPre(Hud __instance, Player player)
+        {
+            try
+            {
+                if (player != null && I != null && player.IsTeleporting() && !player.IsDead()) I.tpSeen = true; // 2.3.9: hold when it ends
+                if (player == null || player.IsDead() || player.IsTeleporting() || player.IsSleeping()) return true;
+                if (Game.instance == null || Game.instance.IsShuttingDown()) return true;
+                if (global::MinimapCache.SaveFix.HoldBlack()) return false; // 2.3.8: a character save is running at the end of this screen
+                var ls = __instance.m_loadingScreen; if (ls == null || !ls.gameObject.activeInHierarchy || ls.alpha < 0.99f) { if (I != null) { I.sawWorld = true; if (!player.IsTeleporting()) { I.tpSeen = false; I.tpHolding = false; } } return true; }
+                return !WantHoldBlack();
+            }
+            catch { return true; }
+        }
+        // the full redo pass behind the next loading / teleport screen
+        void RedoTick(Player pl, InventoryGui inv)
+        {
+            if (!redoPending || !HudBlack() || pl.IsDead() || InventoryGui.IsVisible()) return;
+            redoPending = false;
+            var sw = System.Diagnostics.Stopwatch.StartNew(); string w = "";
+            if (invPreOn.Value) w += InvPreload.Run(inv, pl, invPreCraft.Value) + " ";
+            if (invFxPre.Value) w += InvPreload.PreCreateEffects(inv) + " ";
+            if (glyphFix.Value && (glyphDeferred || !glyphDone)) { glyphDeferred = false; glyphDone = true; w += GlyphFix.Run() + " "; }
+            try { Canvas.ForceUpdateCanvases(); w += "canvases"; } catch (Exception e) { w += "canvases FAILED " + e.Message; }
+            L("UI warm-up redo (behind loading screen): " + w + " took=" + sw.ElapsedMilliseconds + "ms");
+        }
+        // 2.3.2: the real open behind a later loading / teleport screen, if it could not run at spawn and the inventory was never opened
+        void RealRedoTick(Player pl, InventoryGui inv)
+        {
+            bool black = HudBlack();
+            if (InvPreload.realActive)
+            {
+                if (InvPreload.RealTick(inv, InvPreload.FullBlack() && !pl.IsDead(), invRealFrames.Value, out string res)) { if (res != null) L("UI warm-up redo (behind loading screen): " + res); if (InvPreload.realOk) realPending = false; }
+                return;
+            }
+            // 2.3.3: the glyph fix that was put off because the screen was visible runs behind this screen
+            if (glyphDeferred && black && !pl.IsDead() && !redoPending && glyphFix.Value) { glyphDeferred = false; glyphDone = true; L("UI warm-up redo (behind loading screen): " + GlyphFix.Run()); return; }
+            if (!realPending || invRealOn == null || !invRealOn.Value || !invPreOn.Value) return;
+            // 2.3.3: repeated even if you opened the inventory yourself meanwhile (2.3.2 dropped it then); the game's own close while
+            // teleporting is held off by the Hide patch while the screen is black
+            if (!InvPreload.FullBlack() || pl.IsDead() || InventoryGui.IsVisible() || redoPending) return;
+            if (++sRealTries > 3) { realPending = false; L("UI warm-up redo: real inventory open given up after 3 cut-short tries"); return; }
+            sRealRedo++;
+            L("UI warm-up redo (behind loading screen): inventory opened for real: " + InvPreload.RealBegin(inv));
+        }
+        // ---- 2.3.9: warm the inventory grid again a few seconds after arriving ----
+        float arrivedAt = -1f; bool rewarmDone = true;
+        void RewarmTick(Player pl, InventoryGui inv)
+        {
+            if (rewarmDone || arrivedAt < 0f || rewarmSec == null || rewarmSec.Value <= 0f || !invPreOn.Value) { rewarmDone = true; return; }
+            float t = Time.unscaledTime;
+            if (t - arrivedAt < rewarmSec.Value) return;
+            if (t - arrivedAt > rewarmSec.Value + 60f) { rewarmDone = true; return; } // never calm: skip this time
+            if (HudBlack() || InventoryGui.IsVisible() || pl.IsDead() || pl.IsTeleporting() || pl.InAttack() || Time.unscaledDeltaTime > 0.025f || InvPreload.realActive) return;
+            try { if (pl.IsTargeted()) return; } catch { }
+            rewarmDone = true;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            string w = InvPreload.Run(inv, pl, invPreCraft.Value, 2); // the grid update part only (the slow part of a first open)
+            float ms = (float)sw.Elapsed.TotalMilliseconds; sRewarms++; sRewarmMs += ms;
+            L("UI re-warm after arrival (" + rewarmSec.Value.ToString("0") + " s, calm frame): " + w + " took=" + ms.ToString("0.0") + "ms");
+        }
         static bool HudBlack()
         {
             var h = Hud.instance;
@@ -578,11 +977,14 @@ namespace RenderTrim
         void WarmTick()
         {
             if (!warmOn.Value && !invPreOn.Value) return;
-            if (warmDone) return;
+            if (!warmDone) warmTickFrame = Time.frameCount; // 2.3.1: the loading screen hold only acts while this runs
+            InvPreload.realMaxFrames = invRealMax != null ? invRealMax.Value : 10;
+            InvPreload.settleMs = invRealSettleMs != null ? invRealSettleMs.Value : 0.3f; InvPreload.settleFrameMs = invRealSettleFrameMs != null ? invRealSettleFrameMs.Value : 25f;
             var pl = Player.m_localPlayer;
-            if (pl == null || Game.instance == null) { playerSeenAt = -1f; return; }
+            if (pl == null || Game.instance == null) { playerSeenAt = -1f; if (InvPreload.realActive) { try { InvPreload.RealTick(InventoryGui.instance, false, 0, out string _r); } catch { } } return; }
             var mm = Minimap.instance; var inv = InventoryGui.instance;
             if (inv == null) return;
+            if (warmDone) { try { RewarmTick(pl, inv); } catch (Exception e) { rewarmDone = true; L("UI re-warm after arrival failed: " + e.Message); } try { RedoTick(pl, inv); } catch (Exception e) { redoPending = false; L("UI warm-up redo failed: " + e.Message); } try { RealRedoTick(pl, inv); } catch (Exception e) { realPending = false; L("UI warm-up real-open redo failed: " + e.Message); } return; }
             float t = Time.unscaledTime;
             if (playerSeenAt < 0) playerSeenAt = t;
             bool black = HudBlack();
@@ -613,14 +1015,27 @@ namespace RenderTrim
                 if (spread) { L("UI warm-up step 1/3 (" + where + "): " + (w == "" ? "map skipped" : w) + " " + sw.ElapsedMilliseconds + "ms"); return; }
                 warmWhat += w + " ";
             }
+            // 2.3.4 step 2a: the glyph fix from this PC's cache before the inventory steps, so the item texts made in step 2b already
+            // find the diamond (in 2.3.3 it ran in step 2f, after 2b had logged the missing-glyph warnings). Fonts not in the cache yet
+            // are left for step 2f (which runs them behind the black screen or puts them off to the next one).
+            if (glyphFix.Value && !glyphDone && !glyphEarly)
+            {
+                glyphEarly = true;
+                L("UI warm-up step 2a (" + where + "): " + GlyphFix.Run(true));
+                if (!GlyphFix.NeedsProbe()) glyphDone = true;
+                if (spread) return;
+            }
             if (invPreOn.Value && !invPreloaded)
             {
                 if (spread && invPreSplit.Value)
                 {
-                    if (!invShowDone) { invShowDone = true; L("UI warm-up step 2b (" + where + "): " + InvPreload.Run(inv, pl, invPreCraft.Value, 1)); return; }
+                    if (!black) warmVisible = true;
+                    if (!invShowDone) { invShowDone = true; string fx = invFxPre.Value ? " | " + InvPreload.PreCreateEffects(inv) : ""; L("UI warm-up step 2b (" + where + "): " + InvPreload.Run(inv, pl, invPreCraft.Value, 1) + fx); return; }
                     invPreloaded = true; L("UI warm-up step 2c (" + where + "): " + InvPreload.Run(inv, pl, invPreCraft.Value, 2)); return;
                 }
+                if (!black) warmVisible = true;
                 invPreloaded = true; string w = InvPreload.Run(inv, pl, invPreCraft.Value);
+                if (invFxPre.Value) w += " | " + InvPreload.PreCreateEffects(inv);
                 if (spread) { L("UI warm-up step 2/3 (" + where + "): " + w + " " + sw.ElapsedMilliseconds + "ms"); return; }
                 warmWhat += w;
             }
@@ -628,11 +1043,39 @@ namespace RenderTrim
             if (spread && invPreOn.Value && invPrePreGc.Value && !preGcDone)
             {
                 preGcDone = true;
-                if (black) { long h0 = GC.GetTotalMemory(false) >> 20; GC.Collect(); L("UI warm-up step 2d (" + where + "): post-preload GC heap " + h0 + "->" + (GC.GetTotalMemory(false) >> 20) + "MB " + sw.ElapsedMilliseconds + "ms"); return; }
+                if (black) { long h0 = GC.GetTotalMemory(false) >> 20; GC.Collect(); gcCountSeen = GC.CollectionCount(0); usedAfterGc = GC.GetTotalMemory(false); lastGcForced = t; L("UI warm-up step 2d (" + where + "): post-preload GC heap " + h0 + "->" + (GC.GetTotalMemory(false) >> 20) + "MB " + sw.ElapsedMilliseconds + "ms"); return; }
+            }
+            // 2.3.2 step 2e: open the inventory for real for a few drawn frames while the black screen still covers it
+            if (spread && invPreOn.Value && invRealOn.Value && !realDone)
+            {
+                if (InvPreload.realActive)
+                {
+                    if (!InvPreload.RealTick(inv, InvPreload.FullBlack() && !pl.IsDead(), invRealFrames.Value, out string res)) return;
+                    // 2.3.5: RealOpenCount: open it again (next frame) while the screen is still black
+                    realRound++; int rounds = invRealCount != null ? invRealCount.Value : 1;
+                    string rn = rounds > 1 ? " (open " + realRound + "/" + rounds + ")" : "";
+                    if (InvPreload.realOk && realRound < rounds && InvPreload.FullBlack() && !pl.IsDead()) { L("UI warm-up step 2e" + rn + " (" + where + "): " + res + " | opened once more next frame"); return; }
+                    realDone = true; if (!InvPreload.realOk && realRound <= 1) realPending = true;
+                    L("UI warm-up step 2e" + rn + " (" + where + "): " + res + (InvPreload.realOk || realRound > 1 ? "" : " | it is done again behind the next loading / teleport screen"));
+                    return;
+                }
+                if (InvPreload.FullBlack() && !pl.IsDead() && !InventoryGui.IsVisible()) { L("UI warm-up step 2e (" + where + "): inventory opened for real" + (pl.InCutscene() ? " (spawn animation running: the game's close is held off while the screen is black)" : "") + ": " + InvPreload.RealBegin(inv)); return; }
+                realDone = true; realPending = true;
+                L("UI warm-up step 2e skipped (" + (black ? "inventory already open" : "screen no longer black") + ")" + (realPending ? ": it runs behind the next loading / teleport screen" : ""));
+            }
+            // 2.3.3 step 2f: the diamond glyph fix, after the inventory steps (it used to sit in step 2b and ate the hold); with its
+            // per-PC cache it is cheap after the first launch. If the screen is already visible and fonts are still unknown, it waits
+            // for the next loading / teleport screen (the text swap covers those texts meanwhile).
+            if (glyphFix.Value && !glyphDone)
+            {
+                glyphDone = true;
+                if (black || !GlyphFix.NeedsProbe()) { L("UI warm-up step 2f (" + where + "): " + GlyphFix.Run()); if (spread) return; }
+                else { glyphDeferred = true; sGlyphDeferred++; L("UI warm-up step 2f put off (screen visible and " + GlyphFix.UnknownFonts() + " font(s) not in the glyph cache yet): it runs behind the next loading / teleport screen"); }
             }
             warmDone = true;
             if (!spread || black) { try { Canvas.ForceUpdateCanvases(); warmWhat += " canvases"; } catch (Exception e) { warmWhat += " canvases FAILED " + e.Message; } }
-            else warmWhat += " (final canvas pass skipped: screen visible)";
+            else { warmWhat += " (final canvas pass skipped: screen visible)"; warmVisible = true; }
+            if (warmVisible && invPreOn.Value && warmRedo.Value) { redoPending = true; warmWhat += " | part ran with the world visible: a full pass is redone behind the next loading screen"; }
             sw.Stop();
             L("UI warm-up " + (spread ? "step 3/3" : "after spawn") + " (" + where + "): " + warmWhat + " took=" + sw.ElapsedMilliseconds + "ms");
         }
@@ -901,7 +1344,197 @@ namespace RenderTrim
             Plugin.I?.L("inventory first-open safety check: " + (s.Length == 0 ? "state OK" : s));
         }
         // part: 0 = full pass, 1 = Show/Hide only (crafting setup), 2 = grid/stats/canvas pass without Show (1.7.7 split)
+        internal static bool running;
+        // 2.3.1: time every real InventoryGui.Show (with all other mods' patches) and mark the next frames as ui-open for the hitch log
+        static double showT0 = -1; static readonly System.Diagnostics.Stopwatch showSw = System.Diagnostics.Stopwatch.StartNew();
+        internal static void ShowTimePre() { showT0 = running ? -1 : showSw.Elapsed.TotalMilliseconds; }
+        internal static void ShowTimePost()
+        {
+            if (showT0 < 0 || running) return;
+            userOpened = true; InvSplit.Opened();
+            double ms = showSw.Elapsed.TotalMilliseconds - showT0; showT0 = -1;
+            global::ValheimPerformanceFixes.FrameCost.Add("ui-open", ms, "InventoryGui.Show");
+            global::ValheimPerformanceFixes.FrameCost.Tag("ui-open", "inventory opened (layout / canvas rebuild in the next frames)", 2);
+            if (ms >= 8.0) Plugin.I?.LFile("inventory open: InventoryGui.Show took " + ms.ToString("0.0") + " ms");
+        }
+        // 2.3.1: one hidden copy of each inventory effect (inactive parent: no Awake, no sound), removed right away
+        static GameObject fxHolder;
+        internal static string PreCreateEffects(InventoryGui inv)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew(); int n = 0;
+            try
+            {
+                if (fxHolder == null) { fxHolder = new GameObject("vpf_effect_warm"); fxHolder.SetActive(false); UnityEngine.Object.DontDestroyOnLoad(fxHolder); }
+                var seen = new HashSet<GameObject>();
+                foreach (var el in new[] { inv.m_openInventoryEffects, inv.m_closeInventoryEffects, inv.m_setActiveGroupEffects, inv.m_moveItemEffects })
+                {
+                    if (el == null || el.m_effectPrefabs == null) continue;
+                    foreach (var d in el.m_effectPrefabs)
+                    {
+                        if (d == null || !d.m_enabled || d.m_prefab == null || !seen.Add(d.m_prefab)) continue;
+                        var go = UnityEngine.Object.Instantiate(d.m_prefab, fxHolder.transform, false);
+                        UnityEngine.Object.Destroy(go); n++;
+                    }
+                }
+            }
+            catch (Exception e) { return "open effects FAILED " + e.Message; }
+            // 2.3.5: the hidden opens mute the effects, so the open / close sounds were first loaded by the first open you see;
+            // their audio data is loaded here (nothing is played)
+            string au = PreloadEffectAudio(inv);
+            return "open effects pre-created " + n + ", " + au + " (" + sw.ElapsedMilliseconds + "ms)";
+        }
+        static string audioWarm = "not run";
+        static string PreloadEffectAudio(InventoryGui inv)
+        {
+            int clips = 0, loaded = 0, already = 0; var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var fClips = AccessTools.Field(typeof(ZSFX), "m_audioClips");
+                var seen = new HashSet<AudioClip>();
+                foreach (var el in new[] { inv.m_openInventoryEffects, inv.m_closeInventoryEffects, inv.m_setActiveGroupEffects, inv.m_moveItemEffects })
+                {
+                    if (el == null || el.m_effectPrefabs == null) continue;
+                    foreach (var d in el.m_effectPrefabs)
+                    {
+                        if (d == null || !d.m_enabled || d.m_prefab == null) continue;
+                        var list = new List<AudioClip>();
+                        foreach (var a in d.m_prefab.GetComponentsInChildren<AudioSource>(true)) if (a != null && a.clip != null) list.Add(a.clip);
+                        if (fClips != null) foreach (var z in d.m_prefab.GetComponentsInChildren<ZSFX>(true)) { if (z != null && fClips.GetValue(z) is AudioClip[] arr) foreach (var c in arr) if (c != null) list.Add(c); }
+                        foreach (var c in list)
+                        {
+                            if (!seen.Add(c)) continue; clips++;
+                            if (c.loadState == AudioDataLoadState.Loaded) { already++; continue; }
+                            if (c.LoadAudioData()) loaded++;
+                        }
+                    }
+                }
+            }
+            catch (Exception e) { audioWarm = "FAILED " + e.Message; return "sounds FAILED " + e.Message; }
+            audioWarm = "clips=" + clips + " loadedNow=" + loaded + " alreadyLoaded=" + already;
+            return "sounds " + audioWarm + " " + sw.ElapsedMilliseconds + "ms";
+        }
+        // 2.3.2: open the inventory for real (no invisible canvas group) for a few drawn frames, effects muted; only the black
+        // loading screen hides it. RealTick ends it after 'frames' frames, at once when the screen is no longer black.
+        internal static bool realActive, realOk, userOpened; static int realFrames; static object rOpen, rClose, rGrp; static double realShowMs;
+        // 2.3.4: per-frame layout pass while the real open runs
+        internal static int realMaxFrames = 10; internal static float settleMs = 0.3f, settleFrameMs = 25f; static int sPassNear0, sPassNotYet, sRealOpens; static double sRealShowSum; // 2.3.5
+        internal static string Stats235() { string s = "opens=" + sRealOpens + (sRealOpens > 0 ? " avgShow=" + (sRealShowSum / sRealOpens).ToString("0") + "ms" : "") + " framesSettled=" + sPassNear0 + " framesStillBuilding=" + sPassNotYet + " settledAt<=" + settleMs.ToString("0.0#") + "ms/" + settleFrameMs.ToString("0") + "ms | openSound " + audioWarm; sPassNear0 = sPassNotYet = sRealOpens = 0; sRealShowSum = 0; return s; }
+        static double realFirstPass; static int sRealSettled, sRealMaxHit; static string realLast = "-";
+        static readonly List<double> realPass = new List<double>(), realDt = new List<double>();
+        static double LayoutPass(InventoryGui inv)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try { Canvas.ForceUpdateCanvases(); } catch { }
+            if (inv != null)
+            {
+                Rebuild(inv.m_inventoryRoot as RectTransform); Rebuild(inv.m_player); Rebuild(inv.m_container); Rebuild(inv.m_crafting); Rebuild(inv.m_info);
+            }
+            return sw.Elapsed.TotalMilliseconds;
+        }
+        static void Rebuild(RectTransform rt) { try { if (rt != null && rt.gameObject.activeInHierarchy) UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(rt); } catch { } }
+        static string PassText()
+        {
+            if (realPass.Count == 0) return "-";
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < realPass.Count; i++) { if (i > 0) sb.Append('/'); sb.Append(realPass[i].ToString("0.0")); }
+            sb.Append("ms (frame times ");
+            for (int i = 0; i < realDt.Count; i++) { if (i > 0) sb.Append('/'); sb.Append(realDt[i].ToString("0")); }
+            return sb.Append("ms)").ToString();
+        }
+        internal static string Stats234() { string s = "layoutSettled=" + sRealSettled + " stillRebuildingAtMax=" + sRealMaxHit + " lastPasses=" + realLast; sRealSettled = sRealMaxHit = 0; return s; }
+        static readonly System.Diagnostics.Stopwatch realSw = new System.Diagnostics.Stopwatch();
+        internal static string RealBegin(InventoryGui inv)
+        {
+            var fOpen = AccessTools.Field(typeof(InventoryGui), "m_openInventoryEffects");
+            var fClose = AccessTools.Field(typeof(InventoryGui), "m_closeInventoryEffects");
+            var fSetGrp = AccessTools.Field(typeof(InventoryGui), "m_setActiveGroupEffects");
+            rOpen = fOpen?.GetValue(inv); rClose = fClose?.GetValue(inv); rGrp = fSetGrp?.GetValue(inv);
+            if (fOpen != null) fOpen.SetValue(inv, new EffectList());
+            if (fClose != null) fClose.SetValue(inv, new EffectList());
+            if (fSetGrp != null) fSetGrp.SetValue(inv, new EffectList());
+            realActive = true; realOk = false; realFrames = 0; blockedHides = 0; blockedWhy = ""; realSw.Restart();
+            running = true;
+            try { inv.Show(null); }
+            catch (Exception e) { running = false; RealEnd(inv); return "Show FAILED " + (e.InnerException ?? e).Message; }
+            finally { running = false; }
+            try { var an = AccessTools.Field(typeof(InventoryGui), "m_animator")?.GetValue(inv) as Animator; if (an != null) { an.Update(0f); an.Update(10f); } } catch { }
+            realShowMs = realSw.Elapsed.TotalMilliseconds; sRealOpens++; sRealShowSum += realShowMs;
+            realPass.Clear(); realDt.Clear(); double p0 = LayoutPass(inv); realFirstPass = p0;
+            return "Show=" + realShowMs.ToString("0") + "ms, layout pass " + p0.ToString("0.0") + "ms, kept open behind the black screen";
+        }
+        // 2.3.3: fully black (2.3.2 used 0.99, where the open inventory could just show through)
+        internal static bool FullBlack()
+        {
+            var h = Hud.instance;
+            return h != null && h.m_loadingScreen != null && h.m_loadingScreen.gameObject.activeInHierarchy && h.m_loadingScreen.alpha >= 0.999f;
+        }
+        // 2.3.3: while the real open runs behind the black screen, the game's own close (spawn animation, teleport, crafting station
+        // check) is held off; our own close (RealEnd) and every close outside the real open go through as normal
+        static int blockedHides, sBlockedHides; static string blockedWhy = "";
+        internal static int TakeBlockedHides() { int n = sBlockedHides; sBlockedHides = 0; return n; }
+        internal static bool HidePre()
+        {
+            try
+            {
+                if (!realActive || running) return true;
+                var pl = Player.m_localPlayer;
+                if (pl == null || pl.IsDead() || !FullBlack()) return true;
+                if (blockedHides++ == 0) blockedWhy = pl.InCutscene() ? "spawn animation" : pl.IsTeleporting() ? "teleporting" : "other";
+                sBlockedHides++;
+                return false;
+            }
+            catch { return true; }
+        }
+        internal static bool RealTick(InventoryGui inv, bool black, int frames, out string res)
+        {
+            res = null; if (!realActive) return true;
+            realFrames++;
+            bool vis = InventoryGui.IsVisible();
+            // 2.3.4: each frame, force the canvas update and the layout rebuild of the inventory panels and measure it; the open stays
+            // (past RealOpenFrames, up to RealOpenMaxFrames) until that pass is cheap, i.e. the layout has settled behind the black screen
+            double pm = 0; if (black && vis) { pm = LayoutPass(inv); realPass.Add(pm); realDt.Add(Time.unscaledDeltaTime * 1000f); }
+            // 2.3.5: settled = the layout pass is near 0 ms (RealOpenSettledMs) and the frame itself was not slow (RealOpenSettledFrameMs)
+            double dtMs = Time.unscaledDeltaTime * 1000.0;
+            bool settled = pm <= settleMs && (settleFrameMs <= 0f || dtMs <= settleFrameMs);
+            if (black && vis) { if (settled) sPassNear0++; else sPassNotYet++; }
+            int maxF = Math.Max(frames, realMaxFrames);
+            if (black && vis && (realFrames < frames || (!settled && realFrames < maxF))) return false;
+            realOk = black && vis && realFrames >= frames;
+            if (realOk) { if (settled) sRealSettled++; else sRealMaxHit++; }
+            var a = realSw.Elapsed.TotalMilliseconds; RealEnd(inv); double hideMs = realSw.Elapsed.TotalMilliseconds - a;
+            realLast = PassText();
+            res = "real open " + (realOk ? "done" : vis ? "cut short (screen no longer black)" : "cut short (inventory closed by the game)") + ": " + realFrames + " frame(s), Show=" + realShowMs.ToString("0") + "ms Hide=" + hideMs.ToString("0") + "ms, total " + realSw.ElapsedMilliseconds + "ms" + (blockedHides > 0 ? ", the game's close held off " + blockedHides + "x (" + blockedWhy + ")" : "")
+                + " | layout pass first=" + realFirstPass.ToString("0.0") + "ms per frame " + realLast + (realOk ? (settled ? " (settled)" : " (still rebuilding at RealOpenMaxFrames=" + maxF + ")") : "");
+            return true;
+        }
+        static void RealEnd(InventoryGui inv)
+        {
+            realActive = false;
+            if (inv == null) return;
+            try { if (InventoryGui.IsVisible()) { running = true; try { inv.Hide(); } finally { running = false; } } } catch { }
+            try { var an = AccessTools.Field(typeof(InventoryGui), "m_animator")?.GetValue(inv) as Animator; if (an != null) { an.Update(0f); an.Update(10f); } } catch { }
+            try
+            {
+                var fOpen = AccessTools.Field(typeof(InventoryGui), "m_openInventoryEffects");
+                var fClose = AccessTools.Field(typeof(InventoryGui), "m_closeInventoryEffects");
+                var fSetGrp = AccessTools.Field(typeof(InventoryGui), "m_setActiveGroupEffects");
+                if (fOpen != null && rOpen != null) fOpen.SetValue(inv, rOpen);
+                if (fClose != null && rClose != null) fClose.SetValue(inv, rClose);
+                if (fSetGrp != null && rGrp != null) fSetGrp.SetValue(inv, rGrp);
+                rOpen = rClose = rGrp = null;
+                var fHidden = AccessTools.Field(typeof(InventoryGui), "m_hiddenFrames"); var fShown = AccessTools.Field(typeof(InventoryGui), "m_shownFrames");
+                if (fHidden != null) fHidden.SetValue(inv, Math.Max((int)fHidden.GetValue(inv), 9999));
+                if (fShown != null) fShown.SetValue(inv, 0);
+            }
+            catch { }
+            pendingCheck = true;
+        }
         internal static string Run(InventoryGui inv, Player pl, bool craftUnused, int part = 0)
+        {
+            running = true;
+            try { return RunInner(inv, pl, part); } finally { running = false; }
+        }
+        static string RunInner(InventoryGui inv, Player pl, int part)
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
             string r = part == 1 ? "inventory(show/hide part) " : part == 2 ? "inventory(update part) " : "inventory(show/hide) ";
@@ -1000,7 +1633,7 @@ namespace RenderTrim
 
         internal static void Init(Plugin p, Harmony h)
         {
-            on = p.Config.Bind("10. Audio Routing", "Enabled", true, "1.5.0: make mod sound effects obey the in-game volume settings. Re-routes AudioSources that point at a mod-bundled copy of Valheim's mixer to the real group with the same name (SFX, SFX_LARGE, GUI, Music, Ambient...). Prefabs are fixed once (after ZNetScene loads and again on spawn); new ZSFX instances get a one-field check.");
+            on = p.Config.Bind("10. Audio Routing", "Enabled", true, "Make mod sound effects obey the in-game volume settings. Re-routes AudioSources that point at a mod-bundled copy of Valheim's mixer to the real group with the same name (SFX, SFX_LARGE, GUI, Music, Ambient...). Prefabs are fixed once (after ZNetScene loads and again on spawn); new ZSFX instances get a one-field check.");
             remapForeign = p.Config.Bind("10. Audio Routing", "RemapForeignMixers", true, "Re-route sources whose mixer group belongs to a different (mod-bundled) AudioMixer.");
             assignNull = p.Config.Bind("10. Audio Routing", "AssignUnroutedToSfx", true, "Give sources with NO mixer group the vanilla SFX group (sources under AudioMan/MusicMan are never touched).");
             if (!on.Value) { p.L("audio routing disabled by config"); return; }
@@ -1134,8 +1767,10 @@ namespace RenderTrim
     {
         internal static int perFrame = 1;
         static readonly AccessTools.FieldRef<ClutterSystem, bool> forceRebuild = AccessTools.FieldRefAccess<ClutterSystem, bool>("m_forceRebuild");
-        static readonly System.Reflection.MethodInfo update = AccessTools.Method(typeof(ClutterSystem), "UpdateGrass");
-        static readonly System.Reflection.MethodInfo ready = AccessTools.Method(typeof(ClutterSystem), "IsHeightmapReady");
+        // 2.1.0: cached delegates instead of MethodInfo.Invoke (no boxing / object[] per call)
+        static readonly Action<ClutterSystem, float, bool, Vector3> update = Mk<Action<ClutterSystem, float, bool, Vector3>>("UpdateGrass");
+        static readonly Func<ClutterSystem, bool> ready = Mk<Func<ClutterSystem, bool>>("IsHeightmapReady");
+        static T Mk<T>(string n) where T : Delegate { try { var m = AccessTools.Method(typeof(ClutterSystem), n); return m == null ? null : AccessTools.MethodDelegate<T>(m); } catch { return null; } }
         static bool broken;
         internal static void ForceRebuild(ClutterSystem cs) { try { forceRebuild(cs) = true; } catch { } }
 
@@ -1147,10 +1782,9 @@ namespace RenderTrim
             {
                 if (forceRebuild(__instance) || !RenderGroupSystem.IsGroupActive(RenderGroup.Overworld)) return;
                 var cam = Camera.main; if (cam == null) return;
-                if (!(bool)ready.Invoke(__instance, null)) return;
+                if (!ready(__instance)) return;
                 Vector3 c = (!GameCamera.InFreeFly() && Player.m_localPlayer != null) ? Player.m_localPlayer.transform.position : cam.transform.position;
-                var args = new object[] { 0f, false, c };
-                for (int i = 1; i < perFrame; i++) update.Invoke(__instance, args);
+                for (int i = 1; i < perFrame; i++) update(__instance, 0f, false, c);
             }
             catch (Exception e) { broken = true; Plugin.I?.L("grass PatchesPerFrame disabled: " + e.Message); }
         }
@@ -1159,17 +1793,17 @@ namespace RenderTrim
 
 namespace RenderTrim {
 internal static class Adaptive {
-  internal static float pressure, range = 120f; internal static bool fromSB; static float lastT, dtEma = 0.016f, nextLog; static System.Reflection.FieldInfo fP; static bool looked;
+  internal static float pressure, range = 120f; internal static bool fromSB; static float lastT, dtEma = 0.016f, nextLog; static HarmonyLib.AccessTools.FieldRef<float> fP; static bool looked;
   internal static void Tick() {
     try {
       float t = Time.unscaledTime; float dt = Mathf.Clamp(t - lastT, 0f, 0.5f); lastT = t;
-      if (!looked) { looked = true; var ty = HarmonyLib.AccessTools.TypeByName("SpawnBudgetPressure"); if (ty != null) fP = ty.GetField("Value"); }
-      if (fP != null) { pressure = (float)fP.GetValue(null); fromSB = true; }
+      if (!looked) { looked = true; var ty = HarmonyLib.AccessTools.TypeByName("SpawnBudgetPressure"); var fi = ty?.GetField("Value"); if (fi != null && fi.FieldType == typeof(float)) { try { fP = HarmonyLib.AccessTools.StaticFieldRefAccess<float>(fi); } catch { fP = null; } } }
+      if (fP != null) { pressure = fP(); fromSB = true; }
       else { dtEma += (Mathf.Min(Time.unscaledDeltaTime, 0.25f) - dtEma) * Mathf.Clamp01(dt); float raw = Mathf.Clamp01((dtEma - 0.0167f) / 0.0167f); pressure += (raw - pressure) * Mathf.Clamp01(dt / (raw > pressure ? 4f : 10f)); fromSB = false; }
       float lo = Plugin.adLowV, hi = Mathf.Max(Plugin.adHighV, lo + 0.01f); float k = Mathf.Clamp01((pressure - lo) / (hi - lo)) * Plugin.adStrV;
       float target = Mathf.Lerp(Plugin.adLenV, Mathf.Min(Plugin.adLenV, Plugin.adAggV), k);
       range = Mathf.MoveTowards(range, target, Mathf.Abs(Plugin.adLenV - Plugin.adAggV) * dt / Mathf.Max(0.5f, Plugin.adShiftV) + 0.0001f);
-      if (t >= nextLog) { nextLog = t + 30f; Plugin.AdLog("ADAPTIVE pressure=" + pressure.ToString("0.00") + (fromSB ? "(SB)" : "(local)") + " target=" + target.ToString("0") + "m range=" + range.ToString("0") + "m mode=" + (Combat.factor > 0f ? "COMBAT" : "normal")); }
+      if (t >= nextLog) { nextLog = t + 30f; Plugin.AdLog("ADAPTIVE pressure=" + pressure.ToString("0.00") + (fromSB ? "(SB)" : "(local)") + " target=" + target.ToString("0") + "m range=" + range.ToString("0") + "m mode=" + (Combat.factor > 0f ? "COMBAT" : "normal") + " | " + Travel.Stats() + " | " + Extras.Stats()); }
     } catch { }
   }
 }

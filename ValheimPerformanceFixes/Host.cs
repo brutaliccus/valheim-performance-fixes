@@ -30,7 +30,7 @@ namespace ValheimPerformanceFixes
     {
         public const string GUID = "vpf.ValheimPerformanceFixes";
         public const string NAME = "Valheim Performance Fixes";
-        public const string VERSION = "2.0.0";
+        public const string VERSION = "2.1.0";
         const string DropNSpawnGuid = "sighsorry.DropNSpawn", RiverheimGuid = "dev.gurebu.riverheim.stable";
 
         internal static PerformanceFixesPlugin Instance;
@@ -51,6 +51,7 @@ namespace ValheimPerformanceFixes
             Instance = this; Log = Logger;
             if (!System.IO.File.Exists(Config.ConfigFilePath)) ConfigMigration.Run(Config, Log, OldConfigs);
 
+            Overlap.Bind(Config); // 2.3.0: "0. Mod Overlap"
             // Same order the standalone plugins used to load in.
             if (Chainloader.PluginInfos.ContainsKey(DropNSpawnGuid)) AddDropNSpawnCache();
             else Log.LogInfo("Optional module DropNSpawn Cache is off: DropNSpawn (" + DropNSpawnGuid + ") is not loaded.");
@@ -59,6 +60,9 @@ namespace ValheimPerformanceFixes
             if (Chainloader.PluginInfos.ContainsKey(RiverheimGuid)) AddRiverheimCache();
             else Log.LogInfo("Optional module Riverheim Cache is off: Riverheim (" + RiverheimGuid + ") is not loaded.");
             SpawnBudgetLoaded = Add<SpawnBudget.Plugin>("SpawnBudget", "SpawnBudget");
+            // 2.3.0: world loading fixes; set up here (not in a module) so they also run on a dedicated server
+            try { WorldLoad.WorldLoad.Init(Config, s => Log.LogInfo(s)); } catch (Exception e) { Log.LogError("World loading fixes failed to start: " + e); }
+            try { Lean.Lean.Init(Config, s => Log.LogInfo(s)); } catch (Exception e) { Log.LogError("lean fixes failed to start: " + e); }
             Config.Save();
         }
 

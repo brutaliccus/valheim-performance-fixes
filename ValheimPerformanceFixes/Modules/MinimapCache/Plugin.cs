@@ -17,9 +17,9 @@ public class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
   static readonly string[] Files = { "cacheMinimapMask", "cacheMinimapBiome", "cacheMinimapHeight", "cacheMinimapMeta" };
   void Awake() { L = Logger;
     BypassVer = Config.Bind(global::ValheimPerformanceFixes.Sections.MC + "General", "BypassClientWorldVersionCheck", true, "Vanilla rejects the minimap cache when ZNet.World.m_worldVersion != current world version. On a dedicated-server client that value is 0, so the cache NEVER hits and the minimap is regenerated (~11 s) every join. When true, the check is bypassed only while loading from this mod's own keyed cache dir (key = world name+seed+game version+worldgen mods+their configs).");
-    Root = Config.Bind(global::ValheimPerformanceFixes.Sections.MC + "General", "CacheRoot", "", "1.1.1: folder that holds the keyed cache dirs. Empty = <Valheim persistent data>\\MinimapCache (LocalLow\\IronGate\\Valheim\\MinimapCache), which the modpack launcher does not wipe. Do NOT point it inside the the modpack launcher BepInEx folder: that is re-synced every launch (the cause of the 1.1.0 miss on every join).");
-    Migrate = Config.Bind(global::ValheimPerformanceFixes.Sections.MC + "General", "MigrateOldCache", true, "1.1.1: if the new dir is empty, copy a complete 1.1.0 cache (BepInEx\\cache\\MinimapCache\\<world>_*) for the same world and seed into it.");
-    Verbose = Config.Bind(global::ValheimPerformanceFixes.Sections.MC + "Diagnostics", "LogKeyDetails", true, "1.1.1: log the full cache key and the other cache dirs found for this world (to spot key drift).");
+    Root = Config.Bind(global::ValheimPerformanceFixes.Sections.MC + "General", "CacheRoot", "", "Folder that holds the keyed cache dirs. Empty = <Valheim persistent data>\\MinimapCache (LocalLow\\IronGate\\Valheim\\MinimapCache), which the modpack launcher does not wipe. Do NOT point it inside the the modpack launcher BepInEx folder: that is re-synced every launch (that caused a cache miss on every join).");
+    Migrate = Config.Bind(global::ValheimPerformanceFixes.Sections.MC + "General", "MigrateOldCache", true, "If the new dir is empty, copy a complete cache from the old location (BepInEx\\cache\\MinimapCache\\<world>_*) for the same world and seed into it.");
+    Verbose = Config.Bind(global::ValheimPerformanceFixes.Sections.MC + "Diagnostics", "LogKeyDetails", true, "Log the full cache key and the other cache dirs found for this world (to spot key drift).");
     var h = new Harmony("vpf.ValheimPerformanceFixes.MinimapCache");
     try { h.Patch(AccessTools.DeclaredMethod(typeof(Minimap), "Update"), prefix: new HarmonyMethod(typeof(Plugin), nameof(Pre))); } catch (Exception e) { L.LogError("patch failed: " + e.Message); }
     try { var m = AccessTools.DeclaredMethod(typeof(Minimap), "TryLoadMinimapTextureData"); if (m != null) h.Patch(m, prefix: new HarmonyMethod(typeof(Plugin), nameof(TryPre)), finalizer: new HarmonyMethod(typeof(Plugin), nameof(TryFin))); else L.LogWarning("TryLoadMinimapTextureData not found; version bypass inactive"); } catch (Exception e) { L.LogError("version-bypass patch failed: " + e.Message); }
@@ -105,7 +105,7 @@ public class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
           if (Directory.Exists(old)) foreach (var od in Directory.GetDirectories(old, prefix + "*").OrderByDescending(Directory.GetLastWriteTimeUtc)) {
             var ods = od + Path.DirectorySeparatorChar; if (MissReason(ods) != null) continue;
             foreach (var f in Files) File.Copy(ods + f, dir + f, true);
-            L.LogMessage("migrated 1.1.0 cache " + od + " -> " + dir + " (same world+seed; worldgen cfg drift since then would show as wrong terrain colours: delete the dir to force a rebuild)"); why = MissReason(dir); break;
+            L.LogMessage("migrated old-location cache " + od + " -> " + dir + " (same world+seed; worldgen cfg drift since then would show as wrong terrain colours: delete the dir to force a rebuild)"); why = MissReason(dir); break;
           }
         } catch (Exception e) { L.LogWarning("migration skipped: " + e.Message); }
       }

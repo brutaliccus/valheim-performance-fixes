@@ -25,6 +25,9 @@ namespace RenderTrim
             new object[]{"3. Small Prop Cull","Distance",70f,100f,150f},
             new object[]{"3b. Grass","Distance",35f,50f,80f},
             new object[]{"3b. Grass","DensityScale",0.8f,1f,1f},
+            new object[]{"3b. Grass","FullRebuildPatchesPerFrame",4f,8f,16f},
+            new object[]{"14. Distant Terrain","TilesPerFrame",2f,3f,9f},
+            new object[]{"15. Teleport Terrain Prefetch","MaxZones",4f,6f,7f},
             new object[]{"3c. VPO Scene LOD","FarDistanceOverride",120f,160f,220f},
             new object[]{"4. Particles","CullDistance",55f,80f,120f},
             new object[]{"Combat Mode","PropDistance",45f,60f,90f},
@@ -42,7 +45,7 @@ namespace RenderTrim
         internal static readonly float[][] LAYERS = { new[]{110f,70f,70f,110f}, new[]{160f,100f,100f,160f}, new[]{220f,140f,140f,220f} };
         // SpawnBudget: higher budgets = things appear sooner (less pop-in) but more frame time spent creating them.
 // 1.8.0: also drive location soft-cap / dungeon wall / distant backlog. Smart GC IdleSec/MinGapSec/HeadroomMB are NOT in the RT rows -
-// smoothness floors stay at defaults (IdleSec 20, MinGapSec 120, HeadroomMB 64) at every slider position.
+// smoothness floors stay at defaults (IdleSec 20, MinGapSec 120, HeadroomMB 96 since 2.1.1; the floor below stays 64) at every slider position.
         internal static readonly object[][] SB = {
             new object[]{"General","BudgetMs",4f,6f,9f},
             new object[]{"Adaptive","LenientBudgetMs",7f,10f,14f},
@@ -57,6 +60,9 @@ namespace RenderTrim
             new object[]{"Dungeon","SoftEntryWallMs",14f,18f,22f},
             new object[]{"General","DistantMaxPerFrame",4f,10f,20f},
             new object[]{"General","NearBacklogThreshold",20f,40f,80f},
+            new object[]{"World Budget","BudgetMs",8f,10f,14f},
+            new object[]{"Cleanup","RemovalsPerFrame",150f,250f,500f},
+            new object[]{"Slim Location Models","WorkMsPerFrame",1.5f,2f,3f},
         };
 
         internal static void Bind(ConfigFile c, Action<string> l)
@@ -183,14 +189,15 @@ namespace RenderTrim
             {"4. Particles|PauseCulledLooping","Pause looping effects that are out of range instead of letting them run unseen."},
             {"5. GC|CollectInMenus","Clean up memory while a menu is open, so the game does it less often during play (each clean-up is a short freeze)."},
             {"5. GC|MenuMinOpenSec","Menu must be open this long (seconds) before a clean-up."},
-            {"5. GC|HeadroomMB","Only clean up if at least this much memory (MB) has piled up."},
+            {"5. GC|HeadroomMB","Only clean up if at least this much memory (MB) has piled up (default 128)."},
+            {"5. GC|LogEveryGc","Write a line to RenderTrim.log for every memory clean-up, also the ones the game runs on its own, with how long the frame took."},
             {"5. GC|MinGapSec","Minimum seconds between clean-ups."},
             {"5. GC|CollectWhenIdle","Also clean up when you stand still (see Smart GC for the better version)."},
             {"5. GC|IdleSec","Seconds standing still for the setting above."},
             {"5b. Smart GC|Enabled","Clean up memory only when you have been truly still (not walking, not fighting). Needs heap growth above HeadroomMB and MinGapSec spacing. Never while moving. Loading-screen clean-ups are separate. Off = no smart clean-ups during play."},
             {"5b. Smart GC|IdleSec","Seconds of genuine stillness before a clean-up may run (default 20). Never during move/combat. The Quick Setup slider never lowers this below 20."},
             {"5b. Smart GC|MinGapSec","Minimum seconds between these clean-ups (default 120). Higher = fewer freezes while exploring. Quick Setup never goes below 120."},
-            {"5b. Smart GC|HeadroomMB","Only clean up if at least this much memory (MB) has piled up since the last one (default 64). Quick Setup never goes below 64."},
+            {"5b. Smart GC|HeadroomMB","Only clean up if at least this much memory (MB) has piled up since the last one (default 96). Quick Setup never goes below 64."},
             {"5b. Smart GC|CombatRange","Never clean up with an alerted enemy within this many meters."},
             {"5b. Smart GC|AllowInMapOrInventory","Also clean up while the map or inventory is open (still not while moving or fighting)."},
             {"5b. Smart GC|MoveEpsilon","Horizontal speed (m/s) above this counts as moving â€” clean-up never runs while you are moving."},
@@ -218,7 +225,7 @@ namespace RenderTrim
             {"9. UI Warm-up|InventoryPreloadGc","Clean up memory right after the inventory preload."},
             {"9. UI Warm-up|InventoryPreloadFallbackSec","If loading ends too early, do the preload this many seconds after you appear (when it is quiet)."},
             {"9. UI Warm-up|InventoryPreloadSplit","Split the inventory preload over two frames."},
-            {"9. UI Warm-up|InventoryPreloadPreGc","Clean up memory once during loading (1.7.8: after the preload, while still black)."},
+            {"9. UI Warm-up|InventoryPreloadPreGc","Clean up memory once during loading (after the preload, while still black)."},
             {"9. UI Warm-up|SpreadOverFrames","Do the warm-up steps one per frame instead of all at once."},
             {"10. Audio Routing|Enabled","Make sounds from mods follow your in-game volume sliders."},
             {"10. Audio Routing|RemapForeignMixers","Fix mod sounds that use their own volume channel."},
