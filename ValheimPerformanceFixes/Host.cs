@@ -30,7 +30,7 @@ namespace ValheimPerformanceFixes
     {
         public const string GUID = "vpf.ValheimPerformanceFixes";
         public const string NAME = "Valheim Performance Fixes";
-        public const string VERSION = "2.1.0";
+        public const string VERSION = "2.1.1";
         const string DropNSpawnGuid = "sighsorry.DropNSpawn", RiverheimGuid = "dev.gurebu.riverheim.stable";
 
         internal static PerformanceFixesPlugin Instance;

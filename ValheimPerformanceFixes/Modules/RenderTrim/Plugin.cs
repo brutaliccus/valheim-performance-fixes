@@ -69,7 +69,7 @@ namespace RenderTrim
         int propIdx, partIdx, treeIdx;
         float[] savedLayerCull; Camera layerCam; float nextLayer;
         float origLodBias = -1; // unused since 1.7.4
-        internal const string Ver = "2.1.0"; // smartIdle HeadroomMB 64, MinGapSec 120; IdleSec floor 20; never move/combat
+        internal const string Ver = "2.1.1"; // smartIdle HeadroomMB 64, MinGapSec 120; IdleSec floor 20; never move/combat
         float baseBias = -1f, appliedBias = -1f;
         static ConfigEntry<bool> asOn, warmSpread; static ConfigEntry<float> asFps, asMinLod, asMinFar, asDown, asUp, asHold, asRecHold, asMargin;
         internal static float asLod = 1f, asFar = 1f; float asEma = -1f, asNext, asLowSince = -1f, asHighSince = -1f; int asFrames; float asAccum;
@@ -200,7 +200,7 @@ namespace RenderTrim
             spawnHoldPending = Config.Bind("9. UI Warm-up", "SpawnHoldPendingBelow", 50, new ConfigDescription("The spawn hold also waits until fewer than this many nearby objects are still waiting to be created (SpawnBudget's count), up to SpawnHoldMaxSec. 0 = do not wait for objects.", new AcceptableValueRange<int>(0, 5000)));
             spawnHoldMax = Config.Bind("9. UI Warm-up", "SpawnHoldMaxSec", 3f, new ConfigDescription("The most seconds a spawn or teleport hold keeps the screen black (was a fixed 2 s).", new AcceptableValueRange<float>(0.5f, 10f)));
             spawnHoldTp = Config.Bind("9. UI Warm-up", "SpawnHoldAfterTeleports", true, "Run the same hold (frames, seconds, waiting objects) when a teleport ends, before the screen fades in.");
-            rewarmSec = Config.Bind("9. UI Warm-up", "RewarmAfterArrivalSec", 4f, new ConfigDescription("This many seconds after you arrive (spawn or teleport), on a calm frame (no inventory open, not in combat, frame under 25 ms), warm the inventory grid once more so the first open after travel is not slow. 0 = off.", new AcceptableValueRange<float>(0f, 60f)));
+            rewarmSec = Config.Bind("9. UI Warm-up", "RewarmAfterArrivalSec", 4f, new ConfigDescription("This many seconds after you arrive (spawn or teleport), on a calm frame (inventory fully closed for 0.5 s including its close animation, not in combat, frame under 25 ms), warm the inventory grid once more so the first open after travel is not slow. 0 = off.", new AcceptableValueRange<float>(0f, 60f)));
             spawnHoldSec = Config.Bind("9. UI Warm-up", "SpawnHoldSec", 0.5f, new ConfigDescription("The same hold in seconds (see SpawnHoldFrames).", new AcceptableValueRange<float>(0f, 2f)));
             holdMaxSec = Config.Bind("9. UI Warm-up", "HoldLoadingScreenMaxSec", 4f, new ConfigDescription("Needs HoldLoadingScreenSec above 0. HoldLoadingScreenSec now counts only normal frame time (one long freeze such as a big memory clean-up counts as 0.1 s at most), so it is not used up by a single long frame. While warm-up steps are still left the screen stays black for at most this many real seconds in total.", new AcceptableValueRange<float>(1f, 10f)));
             gcScreenOn = Config.Bind("5. GC", "CollectBehindEveryScreen", true, "Run one clean-up behind every loading / teleport / respawn screen (once per screen, while it is fully black) when the heap grew by at least ScreenMinGrowMB since the last clean-up, without waiting for HeadroomMB or MinGapSec. It is never seen, and you arrive with a clean heap, so the first clean-up during play comes later. Not on the death screen. Off = only when the heap grew by HeadroomMB.");
@@ -903,7 +903,7 @@ namespace RenderTrim
             if ((done >= nf && el >= ns && !pendWait) || el > cap)
             {
                 spawnHoldDone = true; if (holdKind == "teleport") sTpHolds++; else sSpawnHolds++; sSpawnHoldFrames += done; sSpawnHoldSec += el; sSpawnHoldMaxMs = Mathf.Max(sSpawnHoldMaxMs, spawnHoldMaxMs);
-                arrivedAt = Time.unscaledTime; rewarmDone = false;
+                arrivedAt = Time.unscaledTime; rewarmDone = false; rewarmCalmSince = -1f; rewarmWhy = null; rewarmPutOff = 0;
                 L(holdKind + " hold: done after " + done + " frames / " + el.ToString("0.00") + " s" + (el > cap ? " (" + cap.ToString("0.0") + " s cap" + (pendWait ? ", " + pend + " objects still waiting" : "") + ")" : "") + (pendWaitCounted && el <= cap ? " (waited for objects)" : "") + ", longest frame while held " + spawnHoldMaxMs.ToString("0.0") + " ms");
                 return false;
             }
@@ -925,7 +925,8 @@ namespace RenderTrim
         // the full redo pass behind the next loading / teleport screen
         void RedoTick(Player pl, InventoryGui inv)
         {
-            if (!redoPending || !HudBlack() || pl.IsDead() || InventoryGui.IsVisible()) return;
+            if (!redoPending || !HudBlack() || pl.IsDead() || InventoryGui.IsVisible() || InvPreload.realActive) return;
+            if (InvPreload.Busy(inv) != null) return; // 2.1.1: inventory still closing: retried on a later frame of this screen
             redoPending = false;
             var sw = System.Diagnostics.Stopwatch.StartNew(); string w = "";
             if (invPreOn.Value) w += InvPreload.Run(inv, pl, invPreCraft.Value) + " ";
@@ -949,20 +950,32 @@ namespace RenderTrim
             // 2.3.3: repeated even if you opened the inventory yourself meanwhile (2.3.2 dropped it then); the game's own close while
             // teleporting is held off by the Hide patch while the screen is black
             if (!InvPreload.FullBlack() || pl.IsDead() || InventoryGui.IsVisible() || redoPending) return;
+            if (InvPreload.Busy(inv) != null) return; // 2.1.1: inventory still closing: retried on a later frame
             if (++sRealTries > 3) { realPending = false; L("UI warm-up redo: real inventory open given up after 3 cut-short tries"); return; }
             sRealRedo++;
             L("UI warm-up redo (behind loading screen): inventory opened for real: " + InvPreload.RealBegin(inv));
         }
         // ---- 2.3.9: warm the inventory grid again a few seconds after arriving ----
-        float arrivedAt = -1f; bool rewarmDone = true;
+        float arrivedAt = -1f, rewarmCalmSince = -1f; bool rewarmDone = true; string rewarmWhy; int rewarmPutOff;
         void RewarmTick(Player pl, InventoryGui inv)
         {
             if (rewarmDone || arrivedAt < 0f || rewarmSec == null || rewarmSec.Value <= 0f || !invPreOn.Value) { rewarmDone = true; return; }
             float t = Time.unscaledTime;
             if (t - arrivedAt < rewarmSec.Value) return;
-            if (t - arrivedAt > rewarmSec.Value + 60f) { rewarmDone = true; return; } // never calm: skip this time
-            if (HudBlack() || InventoryGui.IsVisible() || pl.IsDead() || pl.IsTeleporting() || pl.InAttack() || Time.unscaledDeltaTime > 0.025f || InvPreload.realActive) return;
-            try { if (pl.IsTargeted()) return; } catch { }
+            if (t - arrivedAt > rewarmSec.Value + 60f) { rewarmDone = true; if (rewarmPutOff > 0) L("UI re-warm after arrival skipped: no calm moment within 60 s (put off " + rewarmPutOff + "x, last reason: " + rewarmWhy + ")"); return; } // never calm: skip this time
+            if (HudBlack() || InventoryGui.IsVisible() || pl.IsDead() || pl.IsTeleporting() || pl.InAttack() || Time.unscaledDeltaTime > 0.025f || InvPreload.realActive) { rewarmCalmSince = -1f; return; }
+            try { if (pl.IsTargeted()) { rewarmCalmSince = -1f; return; } } catch { }
+            // 2.1.1: the game already reports the inventory as closed while its close animation still runs (the root stays active);
+            // a pass then ran on the live UI and recorded its half-closed state. Wait until the UI has been fully closed for 0.5 s.
+            string busy = InvPreload.Busy(inv);
+            if (busy != null)
+            {
+                rewarmCalmSince = -1f;
+                if (rewarmPutOff++ < 3 && busy != rewarmWhy) L("UI re-warm after arrival put off: " + busy + " (retried on a later calm frame)");
+                rewarmWhy = busy; return;
+            }
+            if (rewarmCalmSince < 0f) { rewarmCalmSince = t; return; }
+            if (t - rewarmCalmSince < 0.5f) return;
             rewarmDone = true;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             string w = InvPreload.Run(inv, pl, invPreCraft.Value, 2); // the grid update part only (the slow part of a first open)
@@ -976,6 +989,7 @@ namespace RenderTrim
         }
         void WarmTick()
         {
+            try { InvPreload.OpenTick(); } catch { } // 2.1.1: the frames right after a real open are checked too
             if (!warmOn.Value && !invPreOn.Value) return;
             if (!warmDone) warmTickFrame = Time.frameCount; // 2.3.1: the loading screen hold only acts while this runs
             InvPreload.realMaxFrames = invRealMax != null ? invRealMax.Value : 10;
@@ -988,11 +1002,12 @@ namespace RenderTrim
             float t = Time.unscaledTime;
             if (playerSeenAt < 0) playerSeenAt = t;
             bool black = HudBlack();
-            if (!black)
+            if (!black && !InvPreload.realActive) // 2.1.1: a running real open is always finished below (RealTick)
             {
                 // fallback: first quiet second after spawn
                 if (t - playerSeenAt < invPreFallbackSec.Value) return;
                 if (InventoryGui.IsVisible() || pl.IsDead() || pl.IsTeleporting() || InCombat(pl, t)) return;
+                if (InvPreload.Busy(inv) != null) return; // 2.1.1: inventory still closing: wait for a calm frame
             }
             bool spread = warmSpread.Value; string where = black ? "behind loading screen" : "fallback " + (t - playerSeenAt).ToString("0.0") + "s after spawn";
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -1310,38 +1325,65 @@ namespace RenderTrim
             }
             catch (Exception e) { r += name + " FAILED " + (e.InnerException ?? e).Message + " "; }
         }
-        static GameObject guiGo, rootGo; static bool guiHad, rootHad, pendingCheck; static float guiA = 1f, rootA = 1f; static bool guiRc = true, guiIt = true, rootRc = true, rootIt = true;
-        // re-asserts the exact pre-preload CanvasGroup state on the GUI object and the inventory root; removes a leftover added group
-        static string Reassert(InventoryGui inv)
+        static GameObject guiGo; static bool guiHad, pendingCheck; static int checkFrames, sOpenFixes;
+        static readonly System.Reflection.FieldInfo fHiddenS = AccessTools.Field(typeof(InventoryGui), "m_hiddenFrames"), fAnimS = AccessTools.Field(typeof(InventoryGui), "m_animator");
+        // 2.1.1: why no warm-up pass may touch the inventory UI right now (null = calm). IsVisible() turns false one frame after
+        // Hide, but the close animation keeps the inventory root active for a while longer; crafting stations open the same UI.
+        internal static string Busy(InventoryGui inv)
         {
-            string fixedS = "";
             try
             {
-                if (guiGo != null)
-                {
-                    var g = guiGo.GetComponent<CanvasGroup>();
-                    if (!guiHad && g != null && g.alpha == 0f && !g.blocksRaycasts) { UnityEngine.Object.DestroyImmediate(g); fixedS += "guiCG removed "; }
-                    else if (guiHad && g != null && (g.alpha != guiA || g.blocksRaycasts != guiRc || g.interactable != guiIt)) { g.alpha = guiA; g.blocksRaycasts = guiRc; g.interactable = guiIt; fixedS += "guiCG restored "; }
-                }
-                if (rootGo != null && inv != null)
-                {
-                    var c = rootGo.GetComponent<CanvasGroup>();
-                    if (c != null) // on a real open the root must take input
-                    {
-                        bool rc = rootHad ? rootRc : true, it = rootHad ? rootIt : true; float a = rootHad ? rootA : 1f;
-                        if (c.blocksRaycasts != rc || c.interactable != it || c.alpha != a) { c.blocksRaycasts = rc; c.interactable = it; c.alpha = a; fixedS += "rootCG restored "; }
-                    }
-                }
+                if (inv == null) return "no inventory";
+                if (InventoryGui.IsVisible()) return "inventory open";
+                var an = fAnimS?.GetValue(inv) as Animator;
+                if (an != null && an.isActiveAndEnabled && an.GetBool("visible")) return "inventory opening";
+                if (fHiddenS != null && fHiddenS.GetValue(inv) is int h && h < 30) return "inventory closed only " + h + " frame(s) ago";
+                var root = inv.m_inventoryRoot;
+                if (root != null && root.gameObject.activeSelf) return "inventory root still active (close animation running)";
             }
-            catch (Exception e) { fixedS += "reassert FAILED " + e.Message; }
-            return fixedS;
+            catch (Exception e) { return "check failed: " + e.Message; }
+            return null;
         }
-        // first real open after the preload: re-assert the correct state once
+        // 2.1.1: on a real open (inventory, chests and crafting stations all go through Show) the GUI object and the inventory root
+        // must be visible and take input. 2.3.9 restored a saved state here instead, which could be a snapshot taken while the
+        // inventory was still closing (interactable off: every button dead, dragging still working). The input flags are now always
+        // forced on, never restored from a saved state. alphaToo = false on the frames after the open (the open animation may fade).
+        static string EnsureInteractive(InventoryGui inv, bool alphaToo)
+        {
+            string s = "";
+            if (inv == null) return s;
+            var g = inv.GetComponent<CanvasGroup>();
+            if (g != null)
+            {
+                if (!guiHad && guiGo == inv.gameObject && g.alpha == 0f && !g.blocksRaycasts) { UnityEngine.Object.DestroyImmediate(g); s += "leftover warm-up canvas group removed from the inventory object "; }
+                else if ((alphaToo && g.alpha < 1f) || !g.blocksRaycasts || !g.interactable) { s += "inventory object canvas group fixed (was alpha=" + g.alpha.ToString("0.##") + " blocksRaycasts=" + g.blocksRaycasts + " interactable=" + g.interactable + ") "; if (alphaToo) g.alpha = 1f; g.blocksRaycasts = true; g.interactable = true; }
+            }
+            var root = inv.m_inventoryRoot;
+            var c = root != null ? root.GetComponent<CanvasGroup>() : null;
+            if (c != null && ((alphaToo && c.alpha < 1f) || !c.blocksRaycasts || !c.interactable)) { s += "rootCG fixed (was alpha=" + c.alpha.ToString("0.##") + " blocksRaycasts=" + c.blocksRaycasts + " interactable=" + c.interactable + ", now on: buttons respond again) "; if (alphaToo) c.alpha = 1f; c.blocksRaycasts = true; c.interactable = true; }
+            if (s.Length > 0) sOpenFixes++;
+            return s;
+        }
+        static string Where() { try { var p = Player.m_localPlayer; var st = p != null ? p.GetCurrentCraftingStation() : null; return st != null ? " (crafting station " + st.m_name + ")" : ""; } catch { return ""; } }
+        // 2.1.1: every real open is checked (was: only the first open after a warm-up); a few GetComponent calls per open
         internal static void ShowPost(InventoryGui __instance)
         {
-            if (!pendingCheck) return; pendingCheck = false;
-            var s = Reassert(__instance);
-            Plugin.I?.L("inventory first-open safety check: " + (s.Length == 0 ? "state OK" : s));
+            if (running) return; // the warm-up's own opens: their state is put back by them
+            bool first = pendingCheck; pendingCheck = false;
+            string s; try { s = EnsureInteractive(__instance, true); } catch (Exception e) { s = "check FAILED " + e.Message + " "; }
+            checkFrames = 3;
+            if (s.Length > 0) Plugin.I?.L("inventory open safety check" + (first ? " (first open after a warm-up)" : "") + Where() + ": " + s + "(fixes this session: " + sOpenFixes + ")");
+            else if (first) Plugin.I?.L("inventory first-open safety check" + Where() + ": state OK");
+        }
+        // 2.1.1: the same check on the next few frames while the inventory stays open (another mod may change it right after Show)
+        internal static void OpenTick()
+        {
+            if (checkFrames <= 0 || running) return;
+            checkFrames--;
+            var inv = InventoryGui.instance;
+            if (inv == null || !InventoryGui.IsVisible()) { checkFrames = 0; return; }
+            string s = EnsureInteractive(inv, false);
+            if (s.Length > 0) Plugin.I?.L("inventory open safety check (frame after the open)" + Where() + ": " + s + "(fixes this session: " + sOpenFixes + ")");
         }
         // part: 0 = full pass, 1 = Show/Hide only (crafting setup), 2 = grid/stats/canvas pass without Show (1.7.7 split)
         internal static bool running;
@@ -1548,7 +1590,7 @@ namespace RenderTrim
             object oHidden = fHidden?.GetValue(inv), oShown = fShown?.GetValue(inv);
             var cgs = new List<CgRec>();
             var activated = new List<GameObject>();
-            bool shown = false;
+            bool shown = false, rootOwned = false, rootRc = true, rootIt = true; CanvasGroup rootCg = null; float rootA = 1f;
             try
             {
                 // 1.4.2: invisibility ONLY via a canvas group on the InventoryGui object (parent of the root). The inventory root's own
@@ -1556,12 +1598,15 @@ namespace RenderTrim
                 // so in 1.4.1 it captured our "false" and re-applied it after our restore (dead inventory: no drag, no tooltips).
                 var objs = new List<GameObject> { inv.gameObject };
                 var rootT = AccessTools.Field(typeof(InventoryGui), "m_inventoryRoot")?.GetValue(inv) as Component;
-                if (rootT != null) { var rc0 = rootT.GetComponent<CanvasGroup>(); rootHad = rc0 != null; if (rc0 != null) { rootA = rc0.alpha; rootRc = rc0.blocksRaycasts; rootIt = rc0.interactable; } rootGo = rootT.gameObject; }
+                // 2.1.1: the root's CanvasGroup state is recorded (and put back) only when this pass activates the root itself, i.e. the
+                // UI was fully closed. An already active root belongs to an open or closing UI: its CanvasGroup is left alone.
+                if (rootT != null && !rootT.gameObject.activeSelf) { rootCg = rootT.GetComponent<CanvasGroup>(); rootOwned = true; if (rootCg != null) { rootA = rootCg.alpha; rootRc = rootCg.blocksRaycasts; rootIt = rootCg.interactable; } }
+                else if (rootT != null) r += "(root already active: its canvas group left alone) ";
                 foreach (var go in objs)
                 {
                     var cg = go.GetComponent<CanvasGroup>(); bool added = false;
                     if (cg == null) { cg = go.AddComponent<CanvasGroup>(); added = true; }
-                    cgs.Add(new CgRec { cg = cg, added = added, a = cg.alpha, rc = cg.blocksRaycasts, it = cg.interactable }); guiGo = go; guiHad = !added; guiA = cg.alpha; guiRc = cg.blocksRaycasts; guiIt = cg.interactable;
+                    cgs.Add(new CgRec { cg = cg, added = added, a = cg.alpha, rc = cg.blocksRaycasts, it = cg.interactable }); guiGo = go; guiHad = !added;
                     cg.alpha = 0f; cg.blocksRaycasts = false; cg.interactable = false;
                 }
                 if (rootT != null && !rootT.gameObject.activeSelf) { rootT.gameObject.SetActive(true); activated.Add(rootT.gameObject); r += "(root activated) "; }
@@ -1596,13 +1641,14 @@ namespace RenderTrim
                     if (fHidden != null && oHidden != null) fHidden.SetValue(inv, Math.Max((int)oHidden, 9999)); // IsVisible() false immediately -> cursor stays locked
                     if (fShown != null && oShown != null) fShown.SetValue(inv, 0);
                     foreach (var go in activated) go.SetActive(false);
+                    if (rootOwned && rootCg != null && (rootCg.alpha != rootA || rootCg.blocksRaycasts != rootRc || rootCg.interactable != rootIt)) { rootCg.alpha = rootA; rootCg.blocksRaycasts = rootRc; rootCg.interactable = rootIt; r += " (root canvas group put back)"; }
                     foreach (var c in cgs)
                     {
                         if (c.cg == null) continue;
                         c.cg.alpha = c.a; c.cg.blocksRaycasts = c.rc; c.cg.interactable = c.it;
                         if (c.added) UnityEngine.Object.DestroyImmediate(c.cg);
                     }
-                    Reassert(null); pendingCheck = true;
+                    pendingCheck = true;
                 }
                 catch (Exception e) { r += " restore FAILED " + e.Message; }
             }

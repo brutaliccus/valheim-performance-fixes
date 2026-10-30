@@ -35,6 +35,11 @@ Everything lives in `BepInEx/config/vpf.ValheimPerformanceFixes.cfg`, sorted by 
 
 ## Versions
 
+### 2.1.1
+
+- Fixed crafting station buttons (craft, repair, tabs) sometimes not responding after the inventory was closed right before the UI warm-up ran.
+- The UI warm-up after arriving now waits until the inventory has been fully closed for a moment, and every inventory or crafting station open makes sure its buttons take clicks.
+
 ### 2.1.0
 
 New features since 2.0.0. Every one has its own switch in F1, and player builds still load and unload exactly like the unmodded game.

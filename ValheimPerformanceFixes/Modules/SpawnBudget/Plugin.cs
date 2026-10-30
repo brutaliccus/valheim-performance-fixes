@@ -46,7 +46,7 @@ namespace SpawnBudget {
 //  HostSpawnsAtOnce makes "the PC that owns the world" an explicit, switchable rule for every split path, and nothing is
 //  ever deferred while the world owner is generating a zone (Full/Ghost SpawnZone), whatever the switches say.
 public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
-  public const string Ver = "2.1.0";
+  public const string Ver = "2.1.1";
   static ConfigEntry<bool> Enabled, SkipDistant, LogSlow, HmEnabled; static ConfigEntry<float> BudgetMs, SlowMs, HmBudgetMs, FrameBudgetMs, HmProtect, ReportSec; static ConfigEntry<int> HmMaxDefer, MaxPerFrame; static ConfigEntry<bool> HmAllPaths; static ConfigEntry<float> TailSec, ListObjMs;
   static readonly Stopwatch frameSw = new Stopwatch(); static int frame = -1; static double spawnMs, hmMs; static int hmRuns;
   static Func<ZNetScene, ZDO, GameObject> createObj; static bool objOk = true, engagedLogged;
