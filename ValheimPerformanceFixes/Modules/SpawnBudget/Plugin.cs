@@ -2080,6 +2080,7 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
       .Append(" | slimLocations ").Append(slOk ? "on" : "off for this session (checked before building)")
       .Append(" | ").Append(ArStats()).Append(" | ").Append(global::RenderTrim.Plugin.GcStats237())
       .Append("\n   copies 2.1.2: ").Append(Stats212()).Append(" | ").Append(DropQueueStats()).Append(" | ").Append(CollectStats())
+      .Append("\n   memory smoothing 2.1.2-test: ").Append(global::RenderTrim.GcSmooth.Stats())
       .Append("\n   reserve: ").Append(Stats238()).Append(" | ").Append(global::RenderTrim.Plugin.Stats238()).Append(" | ").Append(global::MinimapCache.SaveFix.Stats238()).Append(" | ").Append(global::ValheimPerformanceFixes.Overlap.RecheckStats())
       .Append("\n   ramFloor/hold: ").Append(Stats239()).Append(" | ").Append(global::RenderTrim.Plugin.Stats239()).Append(" | ").Append(global::MinimapCache.SaveFix.Stats239());
     sOvYield = sOvOrphan = 0; sOvMs = 0; sPreStartWait = sPreLetInWait = sPreLetInForced = 0; sLocLandFrames = sLocLandHitch = sLocReloads = 0; sPreCalmWait = sLocScreens = sLocScreensNone = 0; sPrebuilt = sPrebuiltUsed = 0; sPrebuildWaits = sPrebuildLimit = sPrebuildEvicted = sLocMeasured = sPrebuildUnmeasured = sPreEdge = sPreWaitLong = sPreDiscarded = sPreDiscardDestroyed = 0; global::ValheimPerformanceFixes.SyncWatch.Reset();

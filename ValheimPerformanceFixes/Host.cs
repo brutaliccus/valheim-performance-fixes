@@ -22,7 +22,7 @@ namespace ValheimPerformanceFixes
         }
     }
 
-    [BepInPlugin(GUID, NAME, VERSION)]
+    [BepInPlugin(GUID, NAME + " (build " + BUILD + ")", VERSION)]
     [BepInDependency("com.Skarif.ValheimPerformanceOverhaul_WATER", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency(DropNSpawnGuid, BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency(RiverheimGuid, BepInDependency.DependencyFlags.SoftDependency)]
@@ -31,6 +31,9 @@ namespace ValheimPerformanceFixes
         public const string GUID = "vpf.ValheimPerformanceFixes";
         public const string NAME = "Valheim Performance Fixes";
         public const string VERSION = "2.1.2";
+        // 2.1.2-test: BepInEx keeps the plugin version as a plain number (System.Version), so "Loading [...]" in LogOutput.log can never
+        // show a "-test" suffix from VERSION. The build tag goes into the shown plugin name instead; unreleased builds keep "-test".
+        public const string BUILD = "2.1.2-test";
         const string DropNSpawnGuid = "sighsorry.DropNSpawn", RiverheimGuid = "dev.gurebu.riverheim.stable";
 
         internal static PerformanceFixesPlugin Instance;
@@ -48,7 +51,8 @@ namespace ValheimPerformanceFixes
 
         void Awake()
         {
-            Instance = this; Log = Logger;
+            Instance = this; Log = BepInEx.Logging.Logger.CreateLogSource(NAME); // same log prefix as before the build tag was added to the name
+            Log.LogInfo(NAME + " " + BUILD + " (plugin version " + VERSION + ")");
             if (!System.IO.File.Exists(Config.ConfigFilePath)) ConfigMigration.Run(Config, Log, OldConfigs);
 
             Overlap.Bind(Config); // 2.3.0: "0. Mod Overlap"

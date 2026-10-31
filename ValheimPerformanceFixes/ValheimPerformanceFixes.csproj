@@ -4,6 +4,7 @@
     <AssemblyName>ValheimPerformanceFixes</AssemblyName>
     <RootNamespace>ValheimPerformanceFixes</RootNamespace>
     <Version>2.1.2</Version>
+    <InformationalVersion>2.1.2-test</InformationalVersion>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>

@@ -49,6 +49,15 @@ namespace ValheimPerformanceFixes
             }
             catch { }
         }
+        // 2.1.2-test: ms added for frame f, without one owner (no allocation; used every frame by the memory smoothing)
+        internal static double FrameMs(int f, string exceptOwner)
+        {
+            var s = slots[f & 3];
+            if (s.frame != f) return 0;
+            double sum = 0;
+            foreach (var kv in s.ms) if (kv.Key != exceptOwner) sum += kv.Value;
+            return sum;
+        }
         // "dungeon 22.1 ms (DG_ForestCrypt x3), object 8.0 ms (...)"; sum = measured total
         internal static string Describe(int f, double minMs, out double sum, out string first)
         {

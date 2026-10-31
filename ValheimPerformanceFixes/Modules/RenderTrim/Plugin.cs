@@ -77,6 +77,11 @@ namespace RenderTrim
         static ConfigEntry<bool> gcLogEach; long heapLastTick; float dtEma = -1f;
         int gcCountSeen; long usedAfterGc; float lastGcForced = -999f; int forcedMenu, forcedIdle, naturalGcs;
         float menuOpenedAt = -1f; Vector3 lastPos; float stillSince;
+        // 2.1.2-test: read by the memory cleanup smoothing (GcSmooth.cs)
+        internal float StillSince => stillSince; internal float LastForcedGcAt => lastGcForced; internal long UsedAfterGc => usedAfterGc;
+        internal bool CombatNow(Player pl) => InCombat(pl, Time.unscaledTime);
+        internal static bool SmallSliceOn() => gcSliceOn != null && gcSliceOn.Value;
+        internal static ulong UnitySliceNs() { if (gcSliceSaved) return gcSliceOrig; try { return GarbageCollector.incrementalTimeSliceNanoseconds; } catch { return 3000000UL; } }
         internal static int statShadowOff, statPropCulledNow, statPartCulledNow, statPartPausedNow, statTagsReplaced;
 
         void Awake()
@@ -221,6 +226,7 @@ namespace RenderTrim
             harmony = new Harmony(GUID); ModThrottles.Bind(Config); Prewarm.Bind(Config); Preset.Bind(Config, L); LocalStore.Bind(Config, L); AnimFix.Init(Config, harmony); try { Travel.Init(Config, harmony, L); } catch (Exception e) { L("[Travel] init failed: " + e.Message); } try { DropFix.Init(Config, harmony, L); } catch (Exception e) { L("[Drop Fixes] init failed: " + e.Message); } try { Extras.Init(Config, harmony, L); } catch (Exception e) { L("[Extras] init failed: " + e.Message); }
             harmony.PatchAll(typeof(Patches)); try { harmony.PatchAll(typeof(GrassBoost)); } catch (Exception e) { L("grass patch FAILED: " + e.Message); } Combat.Init(harmony);
             AudioRoute.Init(this, harmony);
+            try { GcSmooth.Init(Config, harmony, L, LFile); } catch (Exception e) { L("[Memory] memory cleanup smoothing failed to start: " + e.Message); } // 2.1.2-test
             try { harmony.Patch(AccessTools.DeclaredMethod(typeof(InventoryGui), "Show"), prefix: new HarmonyMethod(typeof(InvPreload), nameof(InvPreload.ShowTimePre)) { priority = Priority.First }, postfix: new HarmonyMethod(typeof(InvPreload), nameof(InvPreload.ShowTimePost)) { priority = Priority.Last - 1 }); } catch (Exception e) { L("inventory open timer patch FAILED: " + e.Message); }
             try { var hm = AccessTools.DeclaredMethod(typeof(InventoryGui), "Hide"); if (hm != null) harmony.Patch(hm, prefix: new HarmonyMethod(typeof(InvPreload), nameof(InvPreload.HidePre)) { priority = Priority.First }); else L("inventory close hold: InventoryGui.Hide not found"); } catch (Exception e) { L("inventory close hold patch FAILED: " + e.Message); }
             try { harmony.Patch(AccessTools.DeclaredMethod(typeof(Hud), "UpdateBlackScreen"), prefix: new HarmonyMethod(typeof(Plugin), nameof(HudBlackPre))); } catch (Exception e) { L("loading screen hold patch FAILED: " + e.Message); }
@@ -585,10 +591,15 @@ namespace RenderTrim
                     naturalGcs += cnt - gcCountSeen;
                     // 2.1.1: a GC this mod did not force. It ran in the previous frame (dt now = length of that frame).
                     float est = dtEma > 0f ? Mathf.Max(0f, dtNow - dtEma) : dtNow;
+                    // 2.1.2-test: collections finished inside the memory smoothing's own incremental steps are already charged to their frame
+                    bool ownStep = false; try { ownStep = GcSmooth.OnCollection(cnt, est); } catch { }
+                    if (ownStep) { if (gcLogEach != null && gcLogEach.Value) LFile("GC #" + (naturalGcs) + " finished inside a memory smoothing incremental step, heap " + (heapLastTick >> 20) + " -> " + (after >> 20) + " MB"); }
+                    else {
                     bool world = false; try { world = Player.m_localPlayer != null && !BlockingScreen(); } catch { }
                     if (world) { gcWorldN++; gcWorldSum += dtNow; if (dtNow > gcWorldMax) gcWorldMax = dtNow; if (dtNow > 33f) gcWorldOver++; }
                     global::ValheimPerformanceFixes.FrameCost.Add("GC", est, "not forced by this mod", -1);
                     if (gcLogEach != null && gcLogEach.Value) LFile("GC (not forced by this mod) #" + naturalGcs + ": that frame took " + dtNow.ToString("0") + " ms (usual " + (dtEma > 0f ? dtEma.ToString("0") : "?") + " ms, so about " + est.ToString("0") + " ms for the GC), heap " + (heapLastTick >> 20) + " -> " + (after >> 20) + " MB");
+                    }
                 }
                 gcCountSeen = cnt; usedAfterGc = after;
             }
@@ -982,6 +993,7 @@ namespace RenderTrim
             float ms = (float)sw.Elapsed.TotalMilliseconds; sRewarms++; sRewarmMs += ms;
             L("UI re-warm after arrival (" + rewarmSec.Value.ToString("0") + " s, calm frame): " + w + " took=" + ms.ToString("0.0") + "ms");
         }
+        internal static bool HudBlackNow() => HudBlack();
         static bool HudBlack()
         {
             var h = Hud.instance;
