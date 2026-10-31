@@ -28,11 +28,6 @@ Everything lives in `BepInEx/config/vpf.ValheimPerformanceFixes.cfg`, sorted by 
 - **Minimap Cache - …**: General, Diagnostics, 2. Save Hitch Fix
 - **Optional - DropNSpawn Cache - …** / **Optional - Riverheim Cache - …**
 
-### Upgrading from the separate plugins
-
-1. Remove the old DLLs (RenderTrim, SpawnBudget, MinimapCache, DropNSpawnCache, RiverheimCache). If one is still installed, its module switches itself off and logs a warning, so nothing gets patched twice.
-2. Start the game once. When the new .cfg does not exist yet, the old `.cfg` files in `BepInEx/config` are recognised by their content (section and key names, not file names) and copied in. Keys keep their names; only the sections get the module prefix shown above. The old files are only read, never changed. See [CONFIG-MAPPING.md](CONFIG-MAPPING.md).
-
 ## Versions
 
 ### 2.1.1
