@@ -10,6 +10,13 @@
 //     idle collections in "5. GC"; it skips the second after one of those ran.
 //  3. Garbage sampler: managed bytes allocated inside the main per-frame update paths (MonoUpdaters, ZNet, ZNetScene, ...)
 //     so the periodic stats can name the top garbage producers.
+//  CapAwareBudget (2.1.2-test): with a frame cap, every frame lasts about the cap period, so the old "budget - last frame"
+//     spare time was always about zero and the adaptive slice never kicked in. Now a frame counts as calm when it lasted at
+//     most 1.15x the cap period, and the spare time comes from the CPU time the frame really used (update + render,
+//     measured from the frame start to the end of rendering), not from the capped wall-clock time. At most half of that
+//     spare time is used, and the extra step size adapts: it halves when a step took more than twice what was asked, and
+//     grows back by 10% per step that kept to it.
+//  TypeSampler: see TypeSampler.cs.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -26,14 +33,25 @@ namespace RenderTrim
 {
     internal sealed class GcSmoothRunner : MonoBehaviour
     {
+        static readonly WaitForEndOfFrame eof = new WaitForEndOfFrame();
         void Update() { GcSmooth.FrameStart(); }
         void LateUpdate() { GcSmooth.FrameEnd(); }
+        void OnEnable() { StartCoroutine(EndOfFrame()); }
+        System.Collections.IEnumerator EndOfFrame()
+        {
+            while (true) { yield return eof; GcSmooth.RenderEnd(); }
+        }
     }
 
     internal static class GcSmooth
     {
         const string S = "20. Memory Cleanup Smoothing";
-        static ConfigEntry<bool> adOn, quietOn, sampOn;
+        static ConfigEntry<bool> adOn, quietOn, sampOn, capOn, typeOn;
+        static ConfigEntry<string> typeHooks;
+        static string harmonyId = "";
+        // CPU time of the frame: frame start -> LateUpdate (this frame) plus LateUpdate -> end of rendering (last frame)
+        static double lateAt = -1, renderMs, cpuMs, cpuSum; static int cpuN, sCalmCapFrames, sStepsHalved;
+        static double stepScale = 1.0;
         static ConfigEntry<float> baseMs, maxMs, budgetMs, extraMaxMs, startGrowMB, quietIdleSec, quietStepMs, quietGrowMB, blockingMs, busyWorkMs;
         static ConfigEntry<string> sampHooks; static ConfigEntry<int> sampTop;
         static Action<string> log, logFile;
@@ -66,10 +84,15 @@ namespace RenderTrim
             sampOn = cfg.Bind(S, "GarbageSampler", true, "Test builds: measure managed memory allocated inside the main per-frame update paths and list the top garbage producers in the periodic stats. Low overhead (two counters per hooked call). Takes effect at the next start.");
             sampHooks = cfg.Bind(S, "SamplerHooks", "MonoUpdaters.FixedUpdate,MonoUpdaters.Update,MonoUpdaters.LateUpdate,ZNetScene.Update,ZNet.Update,ZoneSystem.Update,EnvMan.Update,Game.Update,Hud.Update,Hud.LateUpdate,InventoryGui.Update,Minimap.Update,GameCamera.LateUpdate,ClutterSystem.LateUpdate,AudioMan.Update,Chat.Update,MessageHud.Update,WearNTearUpdater.Update,Menu.Update", "Type.Method list (Valheim classes) the garbage sampler measures. Takes effect at the next start.");
             sampTop = cfg.Bind(S, "SamplerTopN", 6, new ConfigDescription("How many producers the stats line lists.", new AcceptableValueRange<int>(1, 20)));
+            capOn = cfg.Bind(S, "CapAwareBudget", true, "Works with a frame cap / vsync: a frame counts as calm when it lasted at most 1.15x the frame budget, and spare time is taken from the CPU time the frame really used (update + render) instead of the capped frame time. Uses at most half of the spare time, and the extra step size adapts (halves when a step overran 2x, grows back slowly). Off = the old rule (spare = budget - last frame - 1 ms).");
+            typeOn = cfg.Bind(S, "TypeSampler", true, "Test builds: measure time and managed garbage of the per-object update methods (equipment visuals, smoke, footsteps, sounds, water, crafting stations and known mod hooks on equipment visuals) and list calls/min, ms/min and MB/min per method in the periodic stats, plus how many players / armor stands / creatures have equipment visuals. Takes effect at the next start.");
+            typeHooks = cfg.Bind(S, "TypeSamplerHooks", TypeSampler.DefaultHooks, "Namespace.Type.Method list the per-type sampler measures (methods that are not found are skipped). Takes effect at the next start.");
             adOn.SettingChanged += (s, e) => { if (!adOn.Value) RestoreSlice(); };
+            harmonyId = h.Id;
 
             Probe();
             if (sampOn.Value) try { Sampler.Init(h, sampHooks.Value, log); } catch (Exception e) { log("[Memory] garbage sampler failed to start: " + e.Message); }
+            if (typeOn.Value) try { TypeSampler.Init(h, typeHooks.Value, log); } catch (Exception e) { log("[Memory] per-type sampler failed to start: " + e.Message); }
             try { Plugin.I.gameObject.AddComponent<GcSmoothRunner>(); } catch (Exception e) { log("[Memory] could not add the per-frame runner: " + e.Message); }
         }
 
@@ -136,6 +159,11 @@ namespace RenderTrim
             try { more = GarbageCollector.CollectIncremental((ulong)(ms * 1e6)); } catch { more = false; }
             sw.Stop();
             double took = sw.Elapsed.TotalMilliseconds;
+            if (!quiet && capOn != null && capOn.Value)
+            {
+                if (took > 2.0 * ms + 0.25) { stepScale = Math.Max(0.125, stepScale * 0.5); sStepsHalved++; }
+                else stepScale = Math.Min(1.0, stepScale * 1.1);
+            }
             int after = GC.CollectionCount(0);
             if (after != before) { ownFinishedAt = after; if (quiet) sCyclesQuiet++; else sCyclesOurs++; }
             cycleOpen = more && after == before;
@@ -147,9 +175,24 @@ namespace RenderTrim
 
         internal static void FrameStart() { if (Sampler.On) Sampler.FrameStart(); }
 
+        internal static void RenderEnd()
+        {
+            if (lateAt < 0) return;
+            double r = (Time.realtimeSinceStartupAsDouble - lateAt) * 1000.0;
+            if (r >= 0 && r < 1000) renderMs = r;
+        }
+
         internal static void FrameEnd()
         {
             if (Sampler.On) Sampler.FrameEnd();
+            try
+            {
+                double now = Time.realtimeSinceStartupAsDouble;
+                double upd = (now - Time.unscaledTimeAsDouble) * 1000.0;
+                if (upd >= 0 && upd < 1000) { cpuMs = upd + renderMs; cpuSum += cpuMs; cpuN++; }
+                lateAt = now;
+            }
+            catch { cpuMs = Time.unscaledDeltaTime * 1000f; }
             bool ctl = Controlling();
             if (!ctl || !adOn.Value) RestoreSlice();
             if (!ctl) return;
@@ -180,12 +223,21 @@ namespace RenderTrim
             // 1. adaptive slice on world frames
             if (!adOn.Value) return;
             float budget = Budget();
-            float spare = budget - dt - 1f;
-            bool busy = spare <= 0f || combat || FrameCost.WorldBuildBusy || FrameWork() > busyWorkMs.Value || sinceForced < 1f;
+            bool cap = capOn.Value;
+            float spare; bool calm = true;
+            if (cap)
+            {
+                calm = dt <= budget * 1.15f;
+                spare = (float)((budget - cpuMs - 1.0) * 0.5);
+            }
+            else spare = budget - dt - 1f;
+            bool busy = !calm || spare <= 0f || combat || FrameCost.WorldBuildBusy || FrameWork() > busyWorkMs.Value || sinceForced < 1f;
             if (busy) { sBusyFrames++; RestoreSliceToBase(); return; }
+            if (cap) sCalmCapFrames++;
             double extra = 0;
             if (extraMaxMs.Value > 0f && spare >= 0.5f && (cycleOpen || grown >= (long)(startGrowMB.Value * 1048576f)))
-                extra = Math.Min(spare, extraMaxMs.Value);
+                extra = Math.Min(spare, extraMaxMs.Value) * (cap ? stepScale : 1.0);
+            if (extra < 0.1) extra = 0;
             double baseV = BaseNs() / 1e6;
             double slice = Math.Max(baseV, Math.Min(Math.Max(maxMs.Value, baseV), baseV + Math.Max(0, spare - extra)));
             SetSlice((ulong)(slice * 1e6));
@@ -225,8 +277,12 @@ namespace RenderTrim
             sb.Append(" | extraIncremental steps=").Append(sSteps).Append(" used=").Append(sStepMs.ToString("0")).Append("ms (").Append((sStepMs / min).ToString("0")).Append("ms/min) cyclesFinished=").Append(sCyclesOurs);
             sb.Append(" | quiet steps=").Append(sQuietSteps).Append(" used=").Append(sQuietMs.ToString("0")).Append("ms cyclesFinished=").Append(sCyclesQuiet);
             sb.Append(" | worstStep=").Append(sStepMax.ToString("0.0")).Append("ms");
+            sb.Append(" | capAware=").Append(capOn.Value ? "on" : "off").Append(" budget=").Append(Budget().ToString("0.0")).Append("ms avgCpu=").Append(cpuN > 0 ? (cpuSum / cpuN).ToString("0.0") + "ms" : "-").Append(" calmFrames=").Append(sCalmCapFrames).Append(" stepScale=").Append(stepScale.ToString("0.00")).Append(" stepsHalved=").Append(sStepsHalved);
             sb.Append(" | otherCollections n=").Append(sCollections).Append(" (").Append((sCollections / min).ToString("0.0")).Append("/min) blocking>=").Append(blockingMs.Value.ToString("0")).Append("ms n=").Append(sBlocking).Append(" (").Append((sBlocking / min).ToString("0.0")).Append("/min) worst=").Append(sWorstGc.ToString("0")).Append("ms at ").Append(sWorstWhen);
             sb.Append("\n   garbage: ").Append(Sampler.On ? Sampler.Stats(sampTop.Value, min) : "sampler off");
+            try { sb.Append("\n   per-type: ").Append(TypeSampler.Stats(harmonyId)); } catch (Exception e) { sb.Append("\n   per-type: failed ").Append(e.Message); }
+            try { sb.Append("\n   equipment visuals: ").Append(VisUpdate.Stats()); } catch (Exception e) { sb.Append("\n   equipment visuals: failed ").Append(e.Message); }
+            cpuSum = 0; cpuN = 0; sCalmCapFrames = 0; sStepsHalved = 0;
             sRaisedFrames = sSteps = sQuietSteps = sCyclesOurs = sCyclesQuiet = sCollections = sBlocking = sBusyFrames = 0;
             sRaisedSum = sStepMs = sStepMax = sQuietMs = sWorstGc = sAllGcMs = 0; sWorstWhen = "-";
             return sb.ToString();

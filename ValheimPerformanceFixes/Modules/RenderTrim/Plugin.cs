@@ -227,6 +227,7 @@ namespace RenderTrim
             harmony.PatchAll(typeof(Patches)); try { harmony.PatchAll(typeof(GrassBoost)); } catch (Exception e) { L("grass patch FAILED: " + e.Message); } Combat.Init(harmony);
             AudioRoute.Init(this, harmony);
             try { GcSmooth.Init(Config, harmony, L, LFile); } catch (Exception e) { L("[Memory] memory cleanup smoothing failed to start: " + e.Message); } // 2.1.2-test
+            try { VisUpdate.Init(Config, harmony, L); } catch (Exception e) { L("[Equipment Visuals] failed to start: " + e.Message); } // 2.1.2-test
             try { harmony.Patch(AccessTools.DeclaredMethod(typeof(InventoryGui), "Show"), prefix: new HarmonyMethod(typeof(InvPreload), nameof(InvPreload.ShowTimePre)) { priority = Priority.First }, postfix: new HarmonyMethod(typeof(InvPreload), nameof(InvPreload.ShowTimePost)) { priority = Priority.Last - 1 }); } catch (Exception e) { L("inventory open timer patch FAILED: " + e.Message); }
             try { var hm = AccessTools.DeclaredMethod(typeof(InventoryGui), "Hide"); if (hm != null) harmony.Patch(hm, prefix: new HarmonyMethod(typeof(InvPreload), nameof(InvPreload.HidePre)) { priority = Priority.First }); else L("inventory close hold: InventoryGui.Hide not found"); } catch (Exception e) { L("inventory close hold patch FAILED: " + e.Message); }
             try { harmony.Patch(AccessTools.DeclaredMethod(typeof(Hud), "UpdateBlackScreen"), prefix: new HarmonyMethod(typeof(Plugin), nameof(HudBlackPre))); } catch (Exception e) { L("loading screen hold patch FAILED: " + e.Message); }
