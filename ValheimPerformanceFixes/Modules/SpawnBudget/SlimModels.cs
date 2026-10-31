@@ -15,7 +15,7 @@ namespace SpawnBudget {
 //  match (the prefab changed, a removed object would have been awake, another mod patches the spawn), the game's own copy is used.
 //  A template is dropped after IdleUnloadSec without use and on logout; its asset reference is never released while the game quits.
 public partial class Plugin {
-  static ConfigEntry<bool> SlOn; static ConfigEntry<int> SlMinDead; static ConfigEntry<float> SlMinShare, SlWorkMs, SlIdleSec;
+  static ConfigEntry<bool> SlOn, SlWithDns; static ConfigEntry<int> SlMinDead; static ConfigEntry<float> SlMinShare, SlWorkMs, SlIdleSec;
   enum SlState { None, Wanted, Working, NotWorth, Ready }
   sealed class SlEntry {
     public int hash; public string name; public SoftReference<GameObject> sref; public bool held; public GameObject asset, template; public SlState state; public int uses; public float lastUse;
@@ -33,11 +33,32 @@ public partial class Plugin {
     SlMinShare = Config.Bind(SBS + "Slim Location Models", "MinDeadShare", 0.3f, new ConfigDescription("...and when they are at least this share (0-1) of the whole location.", new AcceptableValueRange<float>(0.05f, 0.95f)));
     SlWorkMs = Config.Bind(SBS + "Slim Location Models", "WorkMsPerFrame", 2f, new ConfigDescription("Time per frame spent building light copies (only in frames with nothing else heavy going on). Set by the Quick Setup slider.", new AcceptableValueRange<float>(0.5f, 8f)));
     SlIdleSec = Config.Bind(SBS + "Slim Location Models", "IdleUnloadSec", 300f, new ConfigDescription("Drop a light copy that has not been used for this many seconds (frees its memory).", new AcceptableValueRange<float>(30f, 3600f)));
+    SlWithDns = Config.Bind(SBS + "Slim Location Models", "WorkWithDropNSpawn", true, "2.1.2: keep light copies on when DropNSpawn's only patches on ZoneSystem.SpawnLocation are its location-name prefix, its result postfix and its finalizer (they only note which location is being placed and look at the finished copy; they do not change how it is built). A transpiler or any other mod there still turns light copies off. Off = any other patch there turns them off (2.1.1 behavior).");
     Application.quitting += () => slQuitting = true;
   }
+  // 2.1.2: DropNSpawn's location context on SpawnLocation (prefix pushes the location name, postfix records the finished root and
+  // queues a scan of its spawners, finalizer pops the name). The never-woken networked copies a light copy leaves out are never
+  // woken in the game's own copy either, so the scan finding fewer of them changes nothing that runs.
+  const string DnsId = "sighsorry.DropNSpawn";
+  static List<string> SlOthers(MethodBase m) {
+    var o = global::ValheimPerformanceFixes.PatchGuard.Others(m);
+    if (SlWithDns == null || !SlWithDns.Value) return o;
+    HarmonyLib.Patches info = null; try { info = Harmony.GetPatchInfo(m); } catch { }
+    if (info == null) return o;
+    foreach (var p in info.Transpilers) if (p.owner == DnsId) return o;
+    bool Known(Patch p) { var t = p.PatchMethod != null ? p.PatchMethod.DeclaringType : null; return t != null && t.Name == "ZoneSystemSpawnLocationContextPatch" && p.PatchMethod.ReturnType == typeof(void); }
+    foreach (var p in info.Prefixes) if (p.owner == DnsId && !Known(p)) return o;
+    foreach (var p in info.Postfixes) if (p.owner == DnsId && !Known(p)) return o;
+    foreach (var p in info.Finalizers) if (p.owner == DnsId && !Known(p)) return o;
+    int before = o.Count; o.RemoveAll(x => x.StartsWith(DnsId + " (", StringComparison.Ordinal));
+    if (o.Count < before && !slDnsLogged) { slDnsLogged = true; Log("slim location models: DropNSpawn's location-name prefix / postfix / finalizer on ZoneSystem.SpawnLocation are known and safe with light copies (WorkWithDropNSpawn=true)"); }
+    return o;
+  }
+  static bool slDnsLogged;
   // SpawnLocation prefix: remember which location this is, and never let the prefab change while Unity is still copying it
-  static void SlSpawnPre(ZoneSystem.ZoneLocation location) {
+  static void SlSpawnPre(ZoneSystem.ZoneLocation location, Vector3 pos, ZoneSystem.SpawnMode mode) {
     curZl = location;
+    try { NoteSeen(location, pos, mode); } catch { } // 2.1.2: known spots and placements this session
     try {
       if (location == null) return; int hash = location.Hash;
       if (preOps.TryGetValue(hash, out var op) && op != null && !op.isDone) { op.WaitForCompletion(); }
@@ -49,7 +70,7 @@ public partial class Plugin {
   static bool SlReady(int hash) { return SlActive() && slim.TryGetValue(hash, out var e) && e.state == SlState.Ready && e.template != null; }
   static void SlAudit() {
     slAudited = true;
-    try { var slm = AccessTools.DeclaredMethod(typeof(ZoneSystem), "SpawnLocation"); var o = global::ValheimPerformanceFixes.PatchGuard.Others(slm);
+    try { var slm = AccessTools.DeclaredMethod(typeof(ZoneSystem), "SpawnLocation"); var o = SlOthers(slm);
       // 2.3.7: checked before any light copy is built (first use, every build start), so none is built and then thrown away
       if (o.Count > 0 && slOk) { int had = slim.Count; slOk = false; SlDropAll(null); Log("slim location models off for this session: ZoneSystem.SpawnLocation is also patched by " + string.Join(", ", o) + " (checked before building any; " + sSlBuilt + " built, " + had + " tracked until now)"); } } catch { }
   }

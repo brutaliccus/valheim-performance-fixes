@@ -35,6 +35,14 @@ Everything lives in `BepInEx/config/vpf.ValheimPerformanceFixes.cfg`, sorted by 
 
 ## Versions
 
+### 2.1.2
+
+- Smaller per-frame budgets: every per-frame limit that was 10 ms is now 5 ms (location soft cap, lenient budget, combined frame budget, world budget). Existing configs still on 10 are moved to 5 once; values you changed are kept.
+- Creature drop queue (Spawn Budget - Drop Queue): loot from many creatures dying at once comes out over a few frames (2 items a frame in combat, 8 otherwise, 2 s at most). Each creature's drops stay together, nothing is rolled again, and held drops are dropped at once on save, logout, shutdown, teleport and zone unload. Works with Drop That and DropNSpawn.
+- Smarter location copies (Spawn Budget - Location Assets): the copy limits grow with the memory budget (GrowCopiesWithMemory, up to GrowMaxCopies), a ready copy is let go when you are more than 500 m from every known spot of that location (DropFarCopies, DropCopyBeyondMeters, FarCopyGraceSec), and locations placed again this session are kept first (PreferSessionRepeats).
+- Light location copies now stay on next to DropNSpawn's location context patches on ZoneSystem.SpawnLocation (Slim Location Models WorkWithDropNSpawn). Any other mod or a transpiler there still turns them off.
+- The game's hourly unused-asset unload during play is held until the next loading screen, teleport or pause (Spawn Budget - Asset Unload DeferHourlyUnload, MaxHoldMinutes).
+
 ### 2.1.1
 
 - Fixed crafting station buttons (craft, repair, tabs) sometimes not responding after the inventory was closed right before the UI warm-up ran.

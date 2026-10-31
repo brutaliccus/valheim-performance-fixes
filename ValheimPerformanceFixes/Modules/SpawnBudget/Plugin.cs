@@ -46,7 +46,7 @@ namespace SpawnBudget {
 //  HostSpawnsAtOnce makes "the PC that owns the world" an explicit, switchable rule for every split path, and nothing is
 //  ever deferred while the world owner is generating a zone (Full/Ghost SpawnZone), whatever the switches say.
 public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
-  public const string Ver = "2.1.1";
+  public const string Ver = "2.1.2-test";
   static ConfigEntry<bool> Enabled, SkipDistant, LogSlow, HmEnabled; static ConfigEntry<float> BudgetMs, SlowMs, HmBudgetMs, FrameBudgetMs, HmProtect, ReportSec; static ConfigEntry<int> HmMaxDefer, MaxPerFrame; static ConfigEntry<bool> HmAllPaths; static ConfigEntry<float> TailSec, ListObjMs;
   static readonly Stopwatch frameSw = new Stopwatch(); static int frame = -1; static double spawnMs, hmMs; static int hmRuns;
   static Func<ZNetScene, ZDO, GameObject> createObj; static bool objOk = true, engagedLogged;
@@ -141,7 +141,7 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
     LocHeavyList = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Locations", "HeavyLocations", "", "Optional extra names (normally empty; the ms/transform rules already cover every location).");
     LocSoftCap = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Locations", "SoftCapHeavyActivation", true, "After a heavy location is instantiated inactive, activate it under SoftCapBudgetMs and defer SnapToGround to the next frame so activation does not hitch. Off = old 2-frame split only.");
     LocPreInst = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Locations", "PreInstantiateHeavy", true, "For heavy overworld LocationProxy locations, start Unity InstantiateAsync while approaching AND during arrival/teleport screens so SoftReferenceableAssets.Instantiate is not paid on the spawn frame. Spawn waits (up to MaxDeferFrames) for the clone.");
-    LocSoftCapMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Locations", "SoftCapBudgetMs", 10f, new ConfigDescription("Per-frame ms budget for deferred heavy-location activation (Awake/OnEnable). SnapToGround runs on the following frame. Default 10.", new AcceptableValueRange<float>(4f, 40f)));
+    LocSoftCapMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Locations", "SoftCapBudgetMs", 5f, new ConfigDescription("Per-frame ms budget for deferred heavy-location activation (Awake/OnEnable). SnapToGround runs on the following frame. Default 5 (was 10 before 2.1.2).", new AcceptableValueRange<float>(4f, 40f)));
     LocProxySoftMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Locations", "SoftCapProxyCreateMs", 12f, new ConfigDescription("If creating a LocationProxy (or its location spawn) took longer than this many ms, SoftCap that location on the next activation path so Awake/SnapToGround do not stack on the same hitch.", new AcceptableValueRange<float>(4f, 40f)));
     DgSoftEntry = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Dungeon", "SoftEntry", true, "When entering a crypt/dungeon, stagger room asset loads AND place rooms across frames with SoftEntryWallMs as a hard per-frame wall (~18 ms) so opening a crypt does not freeze for hundreds of ms. Starts as soon as the world is visible (loads before you can reach the next rooms). Independent of SpreadRooms; leave SpreadRooms off unless you want spread without SoftEntry.");
     DgWallMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Dungeon", "SoftEntryWallMs", 18f, new ConfigDescription("Hard per-frame wall (ms) for SoftEntry room loads and room placement. Aim: no dungeon wall above ~20 ms.", new AcceptableValueRange<float>(6f, 40f)));
@@ -165,7 +165,7 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
     PrioRadius = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "General", "PriorityRadius", 40f, new ConfigDescription("Objects within this many meters of you are never deferred by the time budget or count cap (up to PriorityMaxPerFrame per frame); spreading only happens farther out. Live. 0 = off.", new AcceptableValueRange<float>(0f, 100f)));
     PrioMax = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "General", "PriorityMaxPerFrame", 40, new ConfigDescription("Safety cap for priority-radius objects created in one frame.", new AcceptableValueRange<int>(5, 200), new ConfigurationManagerAttributes { IsAdvanced = true }));
     AdOn = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Adaptive", "Enabled", true, "Out of combat, scale the per-frame object budget with load pressure (pending near/distant objects, postponed zones/locations, frame time, active instance count -> 0..1, smoothed). Low pressure = LenientBudgetMs (near vanilla), high = AggressiveBudgetMs. Replaces General/BudgetMs while on. PriorityRadius objects are never deferred either way.");
-    AdLen = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Adaptive", "LenientBudgetMs", 10f, new ConfigDescription("Object creation ms/frame at low pressure.", new AcceptableValueRange<float>(2f, 50f)));
+    AdLen = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Adaptive", "LenientBudgetMs", 5f, new ConfigDescription("Object creation ms/frame at low pressure.", new AcceptableValueRange<float>(2f, 50f)));
     AdAgg = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Adaptive", "AggressiveBudgetMs", 4f, new ConfigDescription("Object creation ms/frame at high pressure.", new AcceptableValueRange<float>(1f, 50f)));
     AdLow = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Adaptive", "LowPressure", 0.25f, new ConfigDescription("Pressure at/below which the lenient value is used.", new AcceptableValueRange<float>(0f, 1f)));
     AdHigh = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Adaptive", "HighPressure", 0.75f, new ConfigDescription("Pressure at/above which the aggressive value is used.", new AcceptableValueRange<float>(0f, 1f)));
@@ -185,7 +185,7 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
     ReportSec = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Diagnostics", "ReportIntervalSeconds", 60f, "Interval of the STATS summary line.");
     HmEnabled = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Heightmap", "Enabled", true, "Time-slice delayed terrain (Heightmap) rebuilds so they don't stack with each other or with object spawns.");
     HmBudgetMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Heightmap", "HeightmapBudgetMs", 4f, "After the first rebuild of a frame, further rebuilds only run while heightmap time this frame is below this.");
-    FrameBudgetMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Heightmap", "CombinedFrameBudgetMs", 10f, "Defer a (non-protected) rebuild if object creation + heightmap rebuilds already used this much of the frame.");
+    FrameBudgetMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Heightmap", "CombinedFrameBudgetMs", 5f, "Defer a (non-protected) rebuild if object creation + heightmap rebuilds already used this much of the frame.");
     HmProtect = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Heightmap", "ProtectRadius", 96f, "Heightmaps whose center is within this many metres (XZ) of the player are never deferred.");
     HmMaxDefer = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Heightmap", "MaxDeferFrames", 20, "A heightmap is never deferred more than this many frames in a row.");
     HmAllPaths = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Heightmap", "SliceAllRegeneratePaths", true, "Also route immediate rebuilds (TerrainComp load / Poke(0), re-enable) of already-built heightmaps beyond ProtectRadius through the sliced path. Heightmaps that have never been built (no collider) are never deferred.");
@@ -203,7 +203,7 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
     ListObjMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Diagnostics", "ListObjectsOverMs", 10f, "STATS lists every prefab with a single creation over this many ms (whole CreateObject incl. all mods' patches).");
     // 2.1.0 additions
     WbOn = Config.Bind(SBS + "World Budget", "Enabled", true, "Share ONE time budget per frame between everything that builds the world while you play: locations, dungeon rooms, new zones and terrain pieces. Before, each had its own budget, so two of them could still land in the same frame and add up to a hitch. The first job in a frame always runs (nothing waits forever) and nothing is held back while a loading screen is up.");
-    WbMs = Config.Bind(SBS + "World Budget", "BudgetMs", 10f, new ConfigDescription("How many milliseconds per frame all world building together may use (the first job of a frame always runs). Higher = the world fills in faster, lower = smoother frames.", new AcceptableValueRange<float>(3f, 40f)));
+    WbMs = Config.Bind(SBS + "World Budget", "BudgetMs", 5f, new ConfigDescription("How many milliseconds per frame all world building together may use (the first job of a frame always runs). Higher = the world fills in faster, lower = smoother frames.", new AcceptableValueRange<float>(3f, 40f)));
     DgPerInstance = Config.Bind(SBS + "Dungeon", "OneDungeonPerFrame", true, "Fix: when two dungeons load at the same time (e.g. two crypts next to each other), only one of them may build rooms in a given frame. Without this both could, because they shared the same name in the one-job-per-frame check.");
     BlKeep = Config.Bind(SBS + "General", "KeepSortedBacklog", true, "Remember the nearest-first order of the objects that are still waiting to appear, and reuse it while you have barely moved, instead of sorting the whole waiting list again every frame. Saves time when a lot is still loading in.");
     BlMeters = Config.Bind(SBS + "General", "ResortAfterMeters", 4f, new ConfigDescription("Sort the waiting list again once you have moved this many metres since the last sort.", new AcceptableValueRange<float>(0.5f, 32f), new ConfigurationManagerAttributes { IsAdvanced = true }));
@@ -246,7 +246,7 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
     DefaultsBump();
     LocSlowLoad();
     try { LocStallImport(oldLog); } catch (Exception e) { Log("load stall import failed: " + e.Message); } oldLog = null;
-    BakeConfig(); SlimConfig(); ArrivalConfig();
+    BakeConfig(); SlimConfig(); ArrivalConfig(); CopiesConfig(); DropQueueConfig(); CollectConfig(); // 2.1.2
     var h = new Harmony("vpf.ValheimPerformanceFixes.SpawnBudget");
     try { h.Patch(AccessTools.Method(typeof(Character), "ApplyDamage"), postfix: new HarmonyMethod(typeof(Plugin), nameof(DmgPost))); } catch (Exception e) { Log("combat damage hook FAILED: " + e.Message); }
     try {
@@ -334,6 +334,7 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
     // hooked method, so they stay even when another mod patches the same method (listed by the patch audit).
     HookFlush(h, typeof(ZNet), "SaveWorld", nameof(FlushSaveWorld)); HookFlush(h, typeof(ZNet), "Save", nameof(FlushSave));
     HookFlush(h, typeof(ZNet), "Shutdown", nameof(FlushNetShutdown)); HookFlush(h, typeof(Game), "Shutdown", nameof(FlushGameShutdown));
+    DropQueuePatch(h); CollectPatch(h); // 2.1.2
     Log("save safety: flush-before-save patched on " + flushHooks.Count + "/4 save and shutdown methods (enabled=" + SfFlush.Value + ")");
     // 2.1.1: time saves for the hitch log (never changes them)
     foreach (var sm0 in new[] { AccessTools.DeclaredMethod(typeof(ZNet), "SaveWorld"), AccessTools.DeclaredMethod(typeof(ZNet), "Save"), AccessTools.DeclaredMethod(typeof(Game), "SavePlayerProfile") })
@@ -1024,6 +1025,15 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
         if (GuessSeeds != null && GuessSeeds.Value == 3) { GuessSeeds.Value = 0; Log("setting moved to the new default: SizeGuessCandidates 3 -> 0 (one time only; set it again in the config if you want 3)"); }
         done.Add(key239); dirty = true;
       }
+      // 2.1.2: the four 10 ms per-frame caps are 5 ms now (a 10 ms cap still showed as a dip in heavy fights and on arrival)
+      const string key212 = "2.1.2 frame caps 10->5";
+      if (!done.Contains(key212)) {
+        var moved = new List<string>();
+        void Move(ConfigEntry<float> c, string n) { if (c != null && Mathf.Approximately(c.Value, 10f)) { c.Value = 5f; moved.Add(n); } }
+        Move(LocSoftCapMs, "Locations.SoftCapBudgetMs"); Move(AdLen, "Adaptive.LenientBudgetMs"); Move(FrameBudgetMs, "Heightmap.CombinedFrameBudgetMs"); Move(WbMs, "World Budget.BudgetMs");
+        if (moved.Count > 0) Log("settings moved to the new default: " + string.Join(", ", moved.ToArray()) + " 10 -> 5 ms (one time only; set them again in the config if you want 10)");
+        done.Add(key212); dirty = true;
+      }
       if (dirty) File.WriteAllLines(p, done.ToArray());
     } catch (Exception e) { Log("default update check failed: " + e.Message); }
   }
@@ -1037,13 +1047,14 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
   static readonly Dictionary<int, float> prebuildWaitAt = new Dictionary<int, float>();
   static int sPrebuildWaits, sPrebuildEvicted, sPrebuildLimit, sPrebuildUnmeasured; static string preWhy = "-";
   static readonly HashSet<int> prebuildLimitCounted = new HashSet<int>(); // 2.3.5: limitHit counts each location once per loading screen
-  static int PrebuildCap() { return Mathf.Clamp(LaPrebuildMax != null ? LaPrebuildMax.Value : 8, 1, 16); }
+  static int PrebuildCap() { int set = Mathf.Clamp(LaPrebuildMax != null ? LaPrebuildMax.Value : 8, 1, 16); return Math.Max(set, GrowCopies()); } // 2.1.2: grows with the memory budget
   static int PreReadyCap() { return Math.Min(Math.Max(8, PrebuildCap() + 2), ResMaxV()); } // 2.3.8: MaxReserveCopies
   static float LocWorstMs(string n) { return n != null && locSlowMs.TryGetValue(n, out var v) ? v : 0f; }
   // 2.3.7: measured ones by worst hitch, then unmeasured ones by remembered load stall (unknown last)
   static readonly Dictionary<string, float> locStallMs = new Dictionary<string, float>();
   static float LocStallMs(string n) { return n != null && locStallMs.TryGetValue(n, out var v) ? v : 0f; }
-  static float RankKey(string n) { float w = LocWorstMs(n); if (w > 0f) return 1e6f + w; float st = LocStallMs(n); return st > 0f ? st : GuessRank(n); } // 2.3.8: then size guess (< 1)
+  static float RankKey(string n) { float w = LocWorstMs(n); if (w > 0f) return (Repeats(n) ? 2e6f : 1e6f) + w; // 2.1.2: placed again this session first
+    float st = LocStallMs(n); return st > 0f ? st : GuessRank(n); } // 2.3.8: then size guess (< 1)
   static void SortWorstFirst(List<string> l) {
     for (int i = 1; i < l.Count; i++) { var x = l[i]; float mx = RankKey(x); int j = i - 1; while (j >= 0 && RankKey(l[j]) < mx) { l[j + 1] = l[j]; j--; } l[j + 1] = x; } // stable: equal keys keep list order
   }
@@ -1093,6 +1104,7 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
       if (preOps.ContainsKey(h)) { prebuildWhy[n] = "copy being built"; if (isWorst) worstNeeds = false; continue; }
       if (SlReady(h)) { prebuildWhy[n] = "light copy ready, no full copy needed"; if (isWorst) worstNeeds = false; continue; }
       if (prebuildTried.Contains(h)) { if (isWorst) worstNeeds = false; continue; } // reason already noted on this screen
+      if (FarSkip(h, out var farWhy)) { if (isWorst) { seenWorst = false; isWorst = false; } prebuildWhy[n] = farWhy; if (farSkipped.Add(h)) sFarSkips++; continue; } // 2.1.2: every known spot is far from where you arrive
       // 2.3.5: cost not known yet: no copy (it is placed the normal way once and timed); it does not count as the worst one
       bool spare = false;
       if (!LocMeasuredOk(n)) {
@@ -1618,6 +1630,7 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
   static void FlushGameShutdown() { FlushPending("Game.Shutdown"); }
   // Finish synchronously everything this module is still spreading over frames. Idempotent and cheap when idle.
   static void FlushPending(string why) {
+    try { DqFlush(why); } catch { } // 2.1.2: held creature drops first (always, even with save flush off)
     if (flushing || SfFlush == null || !SfFlush.Value) return;
     if (locPendingAct.Count == 0 && locPendingSnap.Count == 0 && dgJobs.Count == 0 && dgLoadJobs.Count == 0) return;
     flushing = true; var sw = Stopwatch.StartNew(); int la = 0, dgs = 0, rooms = 0, loads = 0;
@@ -1702,6 +1715,8 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
     a0 = ArT0(); try { ReserveTick(); } catch (Exception e) { Log("reserve copies / size scan: " + e.Message); } ArCost(a0, "sb-reserve", "SpawnBudget reserve copies / size scan"); // 2.3.8
     try { global::ValheimPerformanceFixes.Overlap.Tick(); } catch { }
     try { MarkBuilds(); } catch { }
+    a0 = ArT0(); try { DropQueueTick(); } catch (Exception e) { Log("drop queue tick: " + e.Message); } ArCost(a0, "sb-dropq", "SpawnBudget held creature drops"); // 2.1.2
+    try { CollectTick(); } catch { }
     a0 = ArT0(); try { SlimTick(); } catch (Exception e) { Log("slim location tick: " + e.Message); } ArCost(a0, "sb-slim", "SpawnBudget light copies");
     if (ReportSec == null) return;
     if (Time.realtimeSinceStartup < nextReport) return;
@@ -2064,6 +2079,7 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
       .Append("\n   prebuild spareSlotsToUnmeasured=").Append(sPrebuildSpare).Append(" (").Append(LaSpare != null && LaSpare.Value ? "on" : "off").Append(") loadStallsKnown=").Append(locStallMs.Count).Append(" importedFromLastLog=").Append(sStallsImported)
       .Append(" | slimLocations ").Append(slOk ? "on" : "off for this session (checked before building)")
       .Append(" | ").Append(ArStats()).Append(" | ").Append(global::RenderTrim.Plugin.GcStats237())
+      .Append("\n   copies 2.1.2: ").Append(Stats212()).Append(" | ").Append(DropQueueStats()).Append(" | ").Append(CollectStats())
       .Append("\n   reserve: ").Append(Stats238()).Append(" | ").Append(global::RenderTrim.Plugin.Stats238()).Append(" | ").Append(global::MinimapCache.SaveFix.Stats238()).Append(" | ").Append(global::ValheimPerformanceFixes.Overlap.RecheckStats())
       .Append("\n   ramFloor/hold: ").Append(Stats239()).Append(" | ").Append(global::RenderTrim.Plugin.Stats239()).Append(" | ").Append(global::MinimapCache.SaveFix.Stats239());
     sOvYield = sOvOrphan = 0; sOvMs = 0; sPreStartWait = sPreLetInWait = sPreLetInForced = 0; sLocLandFrames = sLocLandHitch = sLocReloads = 0; sPreCalmWait = sLocScreens = sLocScreensNone = 0; sPrebuilt = sPrebuiltUsed = 0; sPrebuildWaits = sPrebuildLimit = sPrebuildEvicted = sLocMeasured = sPrebuildUnmeasured = sPreEdge = sPreWaitLong = sPreDiscarded = sPreDiscardDestroyed = 0; global::ValheimPerformanceFixes.SyncWatch.Reset();

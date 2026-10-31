@@ -69,7 +69,7 @@ namespace RenderTrim
         int propIdx, partIdx, treeIdx;
         float[] savedLayerCull; Camera layerCam; float nextLayer;
         float origLodBias = -1; // unused since 1.7.4
-        internal const string Ver = "2.1.1"; // smartIdle HeadroomMB 64, MinGapSec 120; IdleSec floor 20; never move/combat
+        internal const string Ver = "2.1.2-test"; // smartIdle HeadroomMB 64, MinGapSec 120; IdleSec floor 20; never move/combat
         float baseBias = -1f, appliedBias = -1f;
         static ConfigEntry<bool> asOn, warmSpread; static ConfigEntry<float> asFps, asMinLod, asMinFar, asDown, asUp, asHold, asRecHold, asMargin;
         internal static float asLod = 1f, asFar = 1f; float asEma = -1f, asNext, asLowSince = -1f, asHighSince = -1f; int asFrames; float asAccum;

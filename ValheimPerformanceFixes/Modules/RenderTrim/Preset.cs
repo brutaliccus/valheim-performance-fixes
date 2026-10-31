@@ -46,21 +46,22 @@ namespace RenderTrim
         // SpawnBudget: higher budgets = things appear sooner (less pop-in) but more frame time spent creating them.
 // 1.8.0: also drive location soft-cap / dungeon wall / distant backlog. Smart GC IdleSec/MinGapSec/HeadroomMB are NOT in the RT rows -
 // smoothness floors stay at defaults (IdleSec 20, MinGapSec 120, HeadroomMB 96 since 2.1.1; the floor below stays 64) at every slider position.
+        // 2.1.2: the four 10 ms frame caps are 5 ms at the middle position (4 / 5 / 8)
         internal static readonly object[][] SB = {
             new object[]{"General","BudgetMs",4f,6f,9f},
-            new object[]{"Adaptive","LenientBudgetMs",7f,10f,14f},
+            new object[]{"Adaptive","LenientBudgetMs",4f,5f,8f},
             new object[]{"Adaptive","AggressiveBudgetMs",3f,4f,6f},
             new object[]{"Combat Mode","CombatBudgetMs",2f,3f,5f},
             new object[]{"Heightmap","HeightmapBudgetMs",3f,4f,6f},
-            new object[]{"Heightmap","CombinedFrameBudgetMs",8f,10f,14f},
+            new object[]{"Heightmap","CombinedFrameBudgetMs",4f,5f,8f},
             new object[]{"Locations","LocationDeferIfFrameOverMs",12f,15f,20f},
-            new object[]{"Locations","SoftCapBudgetMs",8f,10f,14f},
+            new object[]{"Locations","SoftCapBudgetMs",4f,5f,8f},
             new object[]{"Locations","HeavyLocationTransforms",80f,100f,150f},
             new object[]{"Dungeon","RoomBudgetMs",6f,8f,12f},
             new object[]{"Dungeon","SoftEntryWallMs",14f,18f,22f},
             new object[]{"General","DistantMaxPerFrame",4f,10f,20f},
             new object[]{"General","NearBacklogThreshold",20f,40f,80f},
-            new object[]{"World Budget","BudgetMs",8f,10f,14f},
+            new object[]{"World Budget","BudgetMs",4f,5f,8f},
             new object[]{"Cleanup","RemovalsPerFrame",150f,250f,500f},
             new object[]{"Slim Location Models","WorkMsPerFrame",1.5f,2f,3f},
         };

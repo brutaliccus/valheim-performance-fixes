@@ -66,7 +66,7 @@ public partial class Plugin {
   }
   static ConfigEntry<bool> RefillCopyAfterUse;
   static float BigV() { return BigMs != null ? BigMs.Value : 0f; }
-  static int ResMaxV() { return ResMax != null ? Mathf.Clamp(ResMax.Value, 1, 16) : 16; }
+  static int ResMaxV() { int set = ResMax != null ? Mathf.Clamp(ResMax.Value, 1, 16) : 16; int g = GrowCopies(); return g > 0 ? Math.Max(set, g + 2) : set; } // 2.1.2: grows with the memory budget
   static string LocNameOf(int h) { if (h == 0) return null; try { var zl = GetLoc(h); return zl != null ? zl.m_prefabName : null; } catch { return null; } }
   // ---- 2.3.8: big list upkeep ----
   static readonly Dictionary<string, int> locFast = new Dictionary<string, int>(); // timed placements under BigLocationMs in a row
@@ -399,7 +399,7 @@ public partial class Plugin {
   static void ReserveTick() {
     var zn = ZNet.instance; if (zn == null || zn.IsDedicated()) return;
     ResBudgetMB(); // logs RAM and budget once
-    SizeScanTick(); ResRefillTick(); MemWatchTick();
+    SizeScanTick(); ResRefillTick(); MemWatchTick(); try { FarTick(); } catch { } // 2.1.2
     try { LoadPrioTick(); } catch { }
   }
   // ---- 2.3.9: background loading priority ----
