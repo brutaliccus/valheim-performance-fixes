@@ -3,8 +3,8 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>ValheimPerformanceFixes</AssemblyName>
     <RootNamespace>ValheimPerformanceFixes</RootNamespace>
-    <Version>2.1.2</Version>
-    <InformationalVersion>2.1.2-test</InformationalVersion>
+    <Version>2.2.0</Version>
+    <InformationalVersion>2.2.0</InformationalVersion>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>

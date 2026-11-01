@@ -52,10 +52,10 @@ Key names are unchanged everywhere. Only the file and (for most modules) the sec
 | Safety (new in 2.1.1) | Spawn Budget - Safety | FlushBeforeSave, CommitOnComplete, HostSpawnsAtOnce, LeavePlayerBuildsVanilla, PlaceLocationsBeforeBuilds, SpreadDungeonInteriorsNearBuilds |
 | Zones | Spawn Budget - Zones | PostponeIfLastFrameOverMs, ThrottleClientZoneSpawns, MaxDeferTicks |
 | Terrain Collider Bake (new in 2.2.0) | Spawn Budget - Terrain Collider Bake | Enabled, FinishSameFrame |
-| Slim Location Models (new in 2.2.0) | Spawn Budget - Slim Location Models | Enabled, MinDeadObjects, MinDeadShare, WorkMsPerFrame, IdleUnloadSec (new in 2.1.2: WorkWithDropNSpawn) |
-| Location Assets (2.1.2 additions) | Spawn Budget - Location Assets | GrowCopiesWithMemory, GrowMaxCopies, DropFarCopies, DropCopyBeyondMeters, FarCopyGraceSec, SkipFarCopiesBehindScreens, PreferSessionRepeats, SessionRepeatMin |
-| Drop Queue (new in 2.1.2) | Spawn Budget - Drop Queue | Enabled, ItemsPerFrameInCombat, ItemsPerFrame, BudgetMsInCombat, BudgetMs, MaxDelaySec |
-| Asset Unload (new in 2.1.2) | Spawn Budget - Asset Unload | DeferHourlyUnload, MaxHoldMinutes |
+| Slim Location Models (new in 2.2.0) | Spawn Budget - Slim Location Models | Enabled, MinDeadObjects, MinDeadShare, WorkMsPerFrame, IdleUnloadSec (new in 2.2.0: WorkWithDropNSpawn) |
+| Location Assets (2.2.0 additions) | Spawn Budget - Location Assets | GrowCopiesWithMemory, GrowMaxCopies, DropFarCopies, DropCopyBeyondMeters, FarCopyGraceSec, SkipFarCopiesBehindScreens, PreferSessionRepeats, SessionRepeatMin |
+| Drop Queue (new in 2.2.0) | Spawn Budget - Drop Queue | Enabled, ItemsPerFrameInCombat, ItemsPerFrame, BudgetMsInCombat, BudgetMs, MaxDelaySec |
+| Asset Unload (new in 2.2.0) | Spawn Budget - Asset Unload | DeferHourlyUnload, MaxHoldMinutes |
 
 ## Old MinimapCache config -> vpf.ValheimPerformanceFixes.cfg (Valheim Performance Fixes)
 

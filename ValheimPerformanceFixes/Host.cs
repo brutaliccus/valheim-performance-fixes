@@ -30,10 +30,10 @@ namespace ValheimPerformanceFixes
     {
         public const string GUID = "vpf.ValheimPerformanceFixes";
         public const string NAME = "Valheim Performance Fixes";
-        public const string VERSION = "2.1.2";
+        public const string VERSION = "2.2.0";
         // 2.1.2-test: BepInEx keeps the plugin version as a plain number (System.Version), so "Loading [...]" in LogOutput.log can never
         // show a "-test" suffix from VERSION. The build tag goes into the shown plugin name instead; unreleased builds keep "-test".
-        public const string BUILD = "2.1.2-test";
+        public const string BUILD = "2.2.0";
         const string DropNSpawnGuid = "sighsorry.DropNSpawn", RiverheimGuid = "dev.gurebu.riverheim.stable";
 
         internal static PerformanceFixesPlugin Instance;

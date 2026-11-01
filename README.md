@@ -24,7 +24,8 @@ Everything lives in `BepInEx/config/vpf.ValheimPerformanceFixes.cfg`, sorted by 
 - **13. Map Fog, 14. Distant Terrain, 15. Teleport Terrain Prefetch, 16. Fade Settle**: RenderTrim additions
 - **17. Loading Zones, 18. Terrain Worker**: world loading (client and server)
 - **20. Allocation Cuts, 21. Terrain Mesh Reuse, 22. Object Pass, 23. Combat Housekeeping**: small per-frame savings (client only)
-- **Spawn Budget - …**: General, Locations, Dungeon, Zones, Heightmap, Arrival, Location Hysteresis, Adaptive, Combat Mode, Diagnostics, Safety, Terrain Collider Bake, Slim Location Models
+- **20. Memory Cleanup Smoothing, 24. Equipment Visual Updates**: garbage collection smoothing and equipment visual update trims (client only)
+- **Spawn Budget - …**: General, Locations, Dungeon, Zones, Heightmap, Arrival, Location Hysteresis, Adaptive, Combat Mode, Diagnostics, Safety, Terrain Collider Bake, Slim Location Models, Location Assets, Drop Queue, Asset Unload
 - **Minimap Cache - …**: General, Diagnostics, 2. Save Hitch Fix
 - **Optional - DropNSpawn Cache - …** / **Optional - Riverheim Cache - …**
 
@@ -35,15 +36,29 @@ Everything lives in `BepInEx/config/vpf.ValheimPerformanceFixes.cfg`, sorted by 
 
 ## Versions
 
-### 2.1.2
+### 2.2.0
 
-- Smaller per-frame budgets: every per-frame limit that was 10 ms is now 5 ms (location soft cap, lenient budget, combined frame budget, world budget). Existing configs still on 10 are moved to 5 once; values you changed are kept.
-- The object spawn budget (General BudgetMs, 6 ms), the location delay threshold (DelayWhenFrameSpawnOverMs, 6 ms) and the dungeon room budget (RoomBudgetMs, 8 ms) are 5 ms too, so every per-frame budget is 5 ms. Values still on the old default are moved once.
-- Equipment visual updates: the InventorySlots skip now really skips. InventorySlots clears its custom visuals every frame on the menu and loading screens even when there is nothing to clear, and each of those calls used to count as a reset, so the skip never happened. Only a clear that removes something counts now. The stats line also says why each update ran.
-- Creature drop queue (Spawn Budget - Drop Queue): loot from many creatures dying at once comes out over a few frames (2 items a frame in combat, 8 otherwise, 2 s at most). Each creature's drops stay together, nothing is rolled again, and held drops are dropped at once on save, logout, shutdown, teleport and zone unload. Works with Drop That and DropNSpawn.
-- Smarter location copies (Spawn Budget - Location Assets): the copy limits grow with the memory budget (GrowCopiesWithMemory, up to GrowMaxCopies), a ready copy is let go when you are more than 500 m from every known spot of that location (DropFarCopies, DropCopyBeyondMeters, FarCopyGraceSec), and locations placed again this session are kept first (PreferSessionRepeats).
-- Light location copies now stay on next to DropNSpawn's location context patches on ZoneSystem.SpawnLocation (Slim Location Models WorkWithDropNSpawn). Any other mod or a transpiler there still turns them off.
-- The game's hourly unused-asset unload during play is held until the next loading screen, teleport or pause (Spawn Budget - Asset Unload DeferHourlyUnload, MaxHoldMinutes).
+New features since 2.1.0. Each new feature has its own switch in F1.
+
+**Smoother loading**
+- Every per-frame loading budget is now 5 ms (was 6 to 10 ms), so heavy fights and arrivals dip less. Settings still on the old defaults are moved once; values you changed are kept.
+- Loot from many creatures dying at once comes out over a few frames instead of all in one. Each creature's drops stay together, nothing is lost or rolled again, and held drops come out at once on save, logout, teleport and zone unload. Works with Drop That and DropNSpawn.
+- The game's hourly unload of unused assets waits for the next loading screen, teleport or pause instead of running while you play.
+
+**Memory clean-up smoothing**
+- On calm frames the garbage collector gets a bigger share of the spare time, so clean-ups finish in small pieces instead of one long pause. Works with a frame cap or vsync.
+- Small clean-up steps run at quiet moments: standing still out of combat, the pause menu, or the inventory or map open.
+
+**Equipment visuals**
+- InventorySlots' per-frame equipment visual rebuild is skipped while nothing on the character has changed. Equipment and transmog changes still show at once.
+- BalrondAbsoluteOverhaul's per-frame armor bone check is skipped while the armor and body are unchanged.
+- Optional, off by default: characters far from the camera update their equipment visuals less often.
+
+**Big locations**
+- The number of hidden location copies grows with your memory budget.
+- A ready copy is let go when you are far from every known spot of that location, and no copy is made behind a loading screen for a location far from where you arrive.
+- Locations you pass again in the same session are kept first.
+- Lighter location models now stay on when DropNSpawn is installed.
 
 ### 2.1.1
 
