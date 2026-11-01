@@ -6,6 +6,9 @@
 //     The call is skipped while everything it reads is unchanged: the ZDO values it reads, the items the character actually
 //     shows (after any transmog), the body model, its visual count and its own cache resets. A full refresh still runs every
 //     InventorySlotsRefreshSec. Turns itself off when the InventorySlots method is not found.
+//     Fixed in 2.1.2-test: InventorySlots clears its custom visuals every frame while you are on the menu or a loading screen,
+//     even when there is nothing to clear; that used to count as a cache reset every frame, so the skip never happened.
+//     Now only a clear that really removed visuals counts as a reset.
 //  2. ArmorBonesSkip: BalrondAbsoluteOverhaul's per-frame armor bone check (reads the body bones array every frame) is skipped
 //     while the body mesh, root bone, shown chest / leg items and their instances are unchanged; it still runs every
 //     ArmorBonesRecheckSec. Turns itself off when the method is not found.
@@ -43,6 +46,7 @@ namespace RenderTrim
 
         internal static bool slotsOk, bonesOk, distOk;
         static int sSlotsRun, sSlotsSkip, sBonesRun, sBonesSkip, sDistRun, sDistSkip;
+        static int mNew, mTime, mEpoch, mOwn, mZdo, mVis, mInputs, sResets; // why the InventorySlots update ran (reset with Stats)
 
         internal static void Init(ConfigFile cfg, Harmony h, Action<string> L)
         {
@@ -157,15 +161,19 @@ namespace RenderTrim
                 if (isReady == null || isVisuals == null || isSlotDefs == null)
                 { log("[Equipment Visuals] InventorySlots internals not found (ready=" + (isReady != null) + " visuals=" + (isVisuals != null) + " slots=" + (isSlotDefs != null) + "): InventorySlotsSkip off"); return; }
                 h.Patch(m, prefix: new HarmonyMethod(typeof(VisUpdate), nameof(SlotsPre)) { priority = Priority.High }, postfix: new HarmonyMethod(typeof(VisUpdate), nameof(SlotsPost)) { priority = Priority.Last });
-                var inv = AccessTools.DeclaredMethod(pt, "InvalidateCustomEquipmentVisualUpdateCache", Type.EmptyTypes);
-                if (inv != null) h.Patch(inv, postfix: new HarmonyMethod(typeof(VisUpdate), nameof(SlotsReset)));
-                var clr = AccessTools.DeclaredMethod(pt, "ClearCustomEquipmentVisuals", Type.EmptyTypes);
-                if (clr != null) h.Patch(clr, postfix: new HarmonyMethod(typeof(VisUpdate), nameof(SlotsReset)));
+                // 2.1.2-test: count a clear as a reset only when it really removed visuals (the no-argument clear runs every
+                // frame on the menu / loading screen with nothing to clear, which used to defeat the skip completely)
+                foreach (var args in new[] { Type.EmptyTypes, new[] { typeof(VisEquipment) } })
+                {
+                    var clr = AccessTools.DeclaredMethod(pt, "ClearCustomEquipmentVisuals", args);
+                    if (clr != null) h.Patch(clr, prefix: new HarmonyMethod(typeof(VisUpdate), nameof(ClrPre)), postfix: new HarmonyMethod(typeof(VisUpdate), nameof(ClrPost)));
+                }
                 slotsOk = true;
             }
             catch (Exception e) { slotsOk = false; log("[Equipment Visuals] InventorySlots hook failed, InventorySlotsSkip off: " + e.Message); }
         }
-        static void SlotsReset() { isOwnEpoch++; isKeysAt = -100f; }
+        static void ClrPre(out int __state) { __state = isVisuals != null ? isVisuals.Count : -1; }
+        static void ClrPost(int __state) { if (isVisuals != null && isVisuals.Count != __state) { isOwnEpoch++; isKeysAt = -100f; sResets++; } }
 
         // ZDO keys InventorySlots reads for each custom equipment slot (same strings it builds every frame)
         static void RefreshKeys(float t)
@@ -208,15 +216,17 @@ namespace RenderTrim
             MaybePurge(t);
             RefreshKeys(t);
             int id = __0.GetInstanceID();
-            if (!slotState.TryGetValue(id, out var s)) return true;
-            if (t - s.at >= slotsSec.Value || s.epoch != Epoch || s.ownEpoch != isOwnEpoch) return true;
+            if (!slotState.TryGetValue(id, out var s)) { mNew++; return true; }
+            if (t - s.at >= slotsSec.Value) { mTime++; return true; }
+            if (s.epoch != Epoch) { mEpoch++; return true; }
+            if (s.ownEpoch != isOwnEpoch) { mOwn++; return true; }
             var z = ZdoOf(__0);
-            if (!ReferenceEquals(z, s.zdo)) return true;
-            if (isVisuals.Count != s.visCount || Shown(__0) != s.shown) return true;
+            if (!ReferenceEquals(z, s.zdo)) { mZdo++; return true; }
+            if (isVisuals.Count != s.visCount || Shown(__0) != s.shown) { mVis++; return true; }
             if (z != null && z.DataRevision != s.rev)
             {
                 int inp = Inputs(z);
-                if (inp != s.inputs) return true;
+                if (inp != s.inputs) { mInputs++; return true; }
                 s.rev = z.DataRevision; // something else in the ZDO changed, not what InventorySlots reads
             }
             s.seen = t; slotState[id] = s;
@@ -312,10 +322,11 @@ namespace RenderTrim
         internal static string Stats()
         {
             string s = "invSlots " + (slotsOk ? (slotsOn.Value ? "on" : "off") : "n/a") + " run=" + sSlotsRun + " skipped=" + sSlotsSkip
+                + " (ran because: new=" + mNew + " refresh=" + mTime + " forced=" + mEpoch + " cleared=" + mOwn + "/" + sResets + " zdo=" + mZdo + " shown=" + mVis + " slotData=" + mInputs + ")"
                 + " | armorBones " + (bonesOk ? (bonesOn.Value ? "on" : "off") : "n/a") + " run=" + sBonesRun + " skipped=" + sBonesSkip
                 + " | distance " + (distOk ? (distOn.Value ? "on" : "off") : "n/a") + " farRun=" + sDistRun + " farSkipped=" + sDistSkip
                 + " | tracked " + slotState.Count + "/" + boneState.Count;
-            sSlotsRun = sSlotsSkip = sBonesRun = sBonesSkip = sDistRun = sDistSkip = 0;
+            sSlotsRun = sSlotsSkip = sBonesRun = sBonesSkip = sDistRun = sDistSkip = 0; mNew = mTime = mEpoch = mOwn = mZdo = mVis = mInputs = sResets = 0;
             return s;
         }
     }

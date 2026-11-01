@@ -154,14 +154,14 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
     HyClose = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Location Hysteresis", "AlwaysReloadWithinMeters", 128f, new ConfigDescription("A location within this distance (XZ) of you is always re-created immediately, cooldown or not.", new AcceptableValueRange<float>(0f, 500f)));
     SettleGrace = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "General", "SettleGraceSec", 10f, new ConfigDescription("Zone throttle / location hold+prewarm / room-load stagger stay vanilla until the player has spawned and the loading screen has been gone this long.", new AcceptableValueRange<float>(0f, 120f)));
     ZoneHeavyMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Zones", "PostponeIfLastFrameOverMs", 40f, "Postpone a client zone spawn if the previous frame took longer than this (or spent the object budget, or spawned a location).");
-    DgBudgetMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Dungeon", "RoomBudgetMs", 8f, new ConfigDescription("Per-frame ms for dungeon room placement when SoftEntry/SpreadRooms is on. SoftEntry also clamps to SoftEntryWallMs.", new AcceptableValueRange<float>(1f, 50f)));
+    DgBudgetMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Dungeon", "RoomBudgetMs", 5f, new ConfigDescription("Per-frame ms for dungeon room placement when SoftEntry/SpreadRooms is on. SoftEntry also clamps to SoftEntryWallMs.", new AcceptableValueRange<float>(1f, 50f)));
     LocSerialize = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Locations", "SerializeProxySpawns", true, "Client only, world visible: at most one LocationProxy location spawn per frame, and none while this frame's object budget is spent or a dungeon is being spread (uses vanilla's own ShouldDelayProxyLocationSpawning retry).");
-    LocBudgetMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Locations", "DelayWhenFrameSpawnOverMs", 6f, "Delay a location spawn if object creation this frame already exceeded this.");
+    LocBudgetMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Locations", "DelayWhenFrameSpawnOverMs", 5f, "Delay a location spawn if object creation this frame already exceeded this. Default 5 (was 6 before 2.1.2).");
     LocMaxDefer = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Locations", "MaxDeferFrames", 30, "After this many consecutive delayed frames one location is let through regardless.");
     ZoneThrottle = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Zones", "ThrottleClientZoneSpawns", true, "Client only, world visible: postpone ZoneSystem.SpawnZone (client mode) to a later tick if a zone or location already spawned this frame or the object budget is spent (vanilla retries every 0.1 s).");
     ZoneMaxDefer = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Zones", "MaxDeferTicks", 10, "After this many consecutive postponed attempts a zone spawns regardless.");
     Enabled = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "General", "Enabled", true, "Limit time spent creating objects per frame while in-game (never during the loading screen, never on a server).");
-    BudgetMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "General", "BudgetMs", 6f, new ConfigDescription("Per-frame milliseconds for object creation (near + distant combined). At least one near object is always created per frame.", new AcceptableValueRange<float>(1f, 50f)));
+    BudgetMs = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "General", "BudgetMs", 5f, new ConfigDescription("Per-frame milliseconds for object creation (near + distant combined). Default 5 (was 6 before 2.1.2). At least one near object is always created per frame.", new AcceptableValueRange<float>(1f, 50f)));
     PrioRadius = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "General", "PriorityRadius", 40f, new ConfigDescription("Objects within this many meters of you are never deferred by the time budget or count cap (up to PriorityMaxPerFrame per frame); spreading only happens farther out. Live. 0 = off.", new AcceptableValueRange<float>(0f, 100f)));
     PrioMax = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "General", "PriorityMaxPerFrame", 40, new ConfigDescription("Safety cap for priority-radius objects created in one frame.", new AcceptableValueRange<int>(5, 200), new ConfigurationManagerAttributes { IsAdvanced = true }));
     AdOn = Config.Bind(global::ValheimPerformanceFixes.Sections.SB + "Adaptive", "Enabled", true, "Out of combat, scale the per-frame object budget with load pressure (pending near/distant objects, postponed zones/locations, frame time, active instance count -> 0..1, smoothed). Low pressure = LenientBudgetMs (near vanilla), high = AggressiveBudgetMs. Replaces General/BudgetMs while on. PriorityRadius objects are never deferred either way.");
@@ -1033,6 +1033,15 @@ public partial class Plugin : global::ValheimPerformanceFixes.ModuleBehaviour {
         Move(LocSoftCapMs, "Locations.SoftCapBudgetMs"); Move(AdLen, "Adaptive.LenientBudgetMs"); Move(FrameBudgetMs, "Heightmap.CombinedFrameBudgetMs"); Move(WbMs, "World Budget.BudgetMs");
         if (moved.Count > 0) Log("settings moved to the new default: " + string.Join(", ", moved.ToArray()) + " 10 -> 5 ms (one time only; set them again in the config if you want 10)");
         done.Add(key212); dirty = true;
+      }
+      // 2.1.2: the object spawn budget (6 ms) and the dungeon room budget (8 ms) follow the other per-frame caps to 5 ms
+      const string key212b = "2.1.2 object budgets 6/8->5";
+      if (!done.Contains(key212b)) {
+        var moved = new List<string>();
+        void Move2(ConfigEntry<float> c, float from, string n) { if (c != null && Mathf.Approximately(c.Value, from)) { c.Value = 5f; moved.Add(n + " " + from + " -> 5"); } }
+        Move2(BudgetMs, 6f, "General.BudgetMs"); Move2(LocBudgetMs, 6f, "Locations.DelayWhenFrameSpawnOverMs"); Move2(DgBudgetMs, 8f, "Dungeon.RoomBudgetMs");
+        if (moved.Count > 0) Log("settings moved to the new default: " + string.Join(", ", moved.ToArray()) + " ms (one time only; set them again in the config if you want the old value)");
+        done.Add(key212b); dirty = true;
       }
       if (dirty) File.WriteAllLines(p, done.ToArray());
     } catch (Exception e) { Log("default update check failed: " + e.Message); }
