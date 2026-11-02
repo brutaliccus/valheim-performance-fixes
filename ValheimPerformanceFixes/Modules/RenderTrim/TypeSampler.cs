@@ -1,5 +1,5 @@
 // Valheim Performance Fixes - per-type update sampler (2.1.2-test). MIT License.
-// Client only, test builds. Measures time and managed allocation of selected per-object update methods (VisEquipment,
+// Client only, off by default (diagnostics). Measures time and managed allocation of selected per-object update methods (VisEquipment,
 // smoke, footsteps, sound effects, water, crafting stations, and known mod hooks on equipment visuals) so the stats line
 // can show which object type costs how much: calls/min, ms/min, MB/min, plus how many VisEquipment are players, armor
 // stands and creatures. Times are inclusive (a method called inside another counts in both, and other mods' patches on

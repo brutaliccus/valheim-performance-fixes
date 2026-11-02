@@ -41,7 +41,6 @@ Everything lives in `BepInEx/config/vpf.ValheimPerformanceFixes.cfg`, sorted by 
 New features since 2.1.0. Each new feature has its own switch in F1.
 
 **Smoother loading**
-- Every per-frame loading budget is now 5 ms (was 6 to 10 ms), so heavy fights and arrivals dip less. Settings still on the old defaults are moved once; values you changed are kept.
 - Loot from many creatures dying at once comes out over a few frames instead of all in one. Each creature's drops stay together, nothing is lost or rolled again, and held drops come out at once on save, logout, teleport and zone unload. Works with Drop That and DropNSpawn.
 - The game's hourly unload of unused assets waits for the next loading screen, teleport or pause instead of running while you play.
 
@@ -59,6 +58,9 @@ New features since 2.1.0. Each new feature has its own switch in F1.
 - A ready copy is let go when you are far from every known spot of that location, and no copy is made behind a loading screen for a location far from where you arrive.
 - Locations you pass again in the same session are kept first.
 - Lighter location models now stay on when DropNSpawn is installed.
+
+**Tweaks**
+- Per-frame loading budgets default to 5 ms (were 6 to 10 ms), so heavy fights and arrivals dip less. Settings still on the old defaults are moved once; values you changed are kept.
 
 ### 2.1.1
 
