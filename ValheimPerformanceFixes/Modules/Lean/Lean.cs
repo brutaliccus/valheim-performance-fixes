@@ -20,13 +20,15 @@ namespace ValheimPerformanceFixes.Lean
     //  23. Combat Housekeeping  - no "look rotation viewing vector is zero" warnings from stopped projectiles, chest/network
     //                             chatter kept out of the log, mist emitters read mist volume positions once per frame
     //  (24. Support Lookups was removed in 2.3.7; its old settings are dropped from the .cfg on start)
+    //  25. Terrain Edit Protection - terrain-edit objects are created before anything else and are never split into a second copy
     internal static class Lean
     {
         internal const string HarmonyId = "vpf.ValheimPerformanceFixes.lean";
-        const string SA = "20. Allocation Cuts", SM = "21. Terrain Mesh Reuse", SO = "22. Object Pass", SC = "23. Combat Housekeeping";
+        const string SA = "20. Allocation Cuts", SM = "21. Terrain Mesh Reuse", SO = "22. Object Pass", SC = "23. Combat Housekeeping", ST = "25. Terrain Edit Protection";
         internal static Action<string> L;
         static Harmony h;
         internal static ConfigEntry<bool> grassOn, reuseOn, contactOn, zdoOn, meshOn, idleOn, projOn, quietOn, mistOn;
+        internal static ConfigEntry<bool> renCheckOn, editForgetOn, lateOn, firstOn, joinOn;
 
         internal static void Init(ConfigFile c, Action<string> log)
         {
@@ -38,6 +40,11 @@ namespace ValheimPerformanceFixes.Lean
             contactOn = c.Bind(SA, "ContactBuffer", true, "The character, impact-effect and floating-terrain collision handlers read their contact points into a reused array instead of a new array per callback. Same points, same order. Off = vanilla.");
             zdoOn = c.Bind(SA, "ZdoSetNoBox", true, "Setting a number, vector or rotation on a network object compares it with the stored value without boxing (vanilla allocates for every compare). Same result and same 'changed' answer. Off = vanilla.");
             meshOn = c.Bind(SM, "Enabled", true, "When a terrain tile is rebuilt but its heights, size and biomes are exactly the same as last time, the existing collision and render meshes are kept instead of being rebuilt (no collider re-cook). Any height change rebuilds as vanilla. Off = vanilla.");
+            renCheckOn = c.Bind(SM, "RenderHeightCheck", true, "The render mesh is only kept when the tile's heights are checked again at that moment and match the heights it was built from, and the collision check ran in the same rebuild. Off = the render mesh follows the collision check alone.");
+            editForgetOn = c.Bind(SM, "ForgetOnTerrainEdit", true, "Whenever a tile's terrain-edit data loads, is saved, or its terrain-edit object goes away, the kept meshes of that tile are forgotten so the next rebuild is a full one. Off = only the height compare decides.");
+            lateOn = c.Bind(SM, "LateConflictCheck", true, "Every 2 s the terrain rebuild methods are checked again for other mods' patches, including mods that add or remove their patches while the game runs (for example a terrain mesh cache). While another mod is there, mesh reuse pauses and vanilla rebuilds run; it resumes when the other patch is gone. Off = checked once at start only.");
+            firstOn = c.Bind(ST, "LoadEditsFirst", true, "Terrain-edit objects (dig, raise, level, paint and older terrain modifiers) are created as soon as their zone is ready, ahead of the per-frame object budget and never held back by the idle object pass. Edits made right after you arrive land on the existing edits instead of a fresh copy. Off = they load in the normal order.");
+            joinOn = c.Bind(ST, "JoinExistingEdits", true, "When you dig, raise, level or paint a tile whose terrain-edit object is known but not created yet, it is created on the spot and your edit is added to it, instead of the game starting a second empty one that later replaces it. Off = vanilla.");
             idleOn = c.Bind(SO, "SkipIdlePasses", true, "The object create/remove pass (30 times a second) is skipped while nothing it looks at changed: same zone, same view range, every nearby object already created, no object added, removed or changed type, nothing held back by the removal cap or location keep-alive. Runs at least every 0.5 s anyway. Player builds and everything else still load in the game's own order. Off = vanilla.");
             projOn = c.Bind(SC, "ProjectileLook", true, "A projectile whose velocity is exactly zero keeps the same rotation the game would give it without Unity logging a 'Look rotation viewing vector is zero' warning each physics step. Off = vanilla.");
             quietOn = c.Bind(SC, "QuietLogs", true, "The per-request chest open/stack/take-all lines and 'Failed to send data' network lines are counted instead of written to the log. Off = vanilla logging.");
@@ -51,6 +58,7 @@ namespace ValheimPerformanceFixes.Lean
             Hook("quiet logs", Combat.PatchQuiet);
             Hook("mist once", Combat.PatchMist);
             Hook("object pass", IdlePass.Prepare);
+            Hook("terrain edit protection", TerrainGuard.Patch);
             reuseOn.SettingChanged += (s, e) => Alloc.ApplyReuse();
             Alloc.ApplyReuse();
             var go = new GameObject("vpf_lean"); UnityEngine.Object.DontDestroyOnLoad(go); go.hideFlags = HideFlags.HideAndDontSave; go.AddComponent<Runner>();
@@ -71,12 +79,13 @@ namespace ValheimPerformanceFixes.Lean
 
         sealed class Runner : MonoBehaviour
         {
-            float nextCede;
+            float nextCede, nextMesh;
             void Update()
             {
                 try { Alloc.Tick(); } catch (Exception e) { L("grass array return failed, pooling off: " + e.Message); Alloc.grassBroken = true; }
                 float t = Time.realtimeSinceStartup;
                 if (t >= nextCede) { nextCede = t + 1f; try { IdlePass.Drive(); } catch (Exception e) { L("object pass check failed: " + e.Message); } }
+                if (t >= nextMesh) { nextMesh = t + 2f; try { MeshKeep.Recheck(); } catch (Exception e) { L("terrain mesh conflict check failed: " + e.Message); } }
             }
             void OnDestroy() { try { Alloc.RestoreReuse(); } catch { } }
         }
@@ -85,11 +94,12 @@ namespace ValheimPerformanceFixes.Lean
         {
             var s = "allocCuts grassArrays new=" + Alloc.sRentNew + " reused=" + Alloc.sRentReused + " handedBack=" + Alloc.sReturned + " pooled=" + Alloc.PoolCount()
                 + " contactArraysSaved=" + Alloc.sContacts + " zdoSetUnboxed=" + Alloc.sZdoSame + "same/" + Alloc.sZdoSet + "changed collisionReuse=" + (reuseOn != null && reuseOn.Value ? "on" : "off")
-                + " | terrainMesh collisionKept=" + MeshKeep.sColKept + " renderKept=" + MeshKeep.sRenKept + " rebuilt=" + MeshKeep.sColBuilt + "/" + MeshKeep.sRenBuilt
+                + " | terrainMesh collisionKept=" + MeshKeep.sColKept + " renderKept=" + MeshKeep.sRenKept + " rebuilt=" + MeshKeep.sColBuilt + "/" + MeshKeep.sRenBuilt + " forgotten=" + MeshKeep.sForgot + (MeshKeep.Paused ? " (paused: other mod)" : "")
+                + " | terrainEdits first=" + TerrainGuard.sFirst + " joined=" + TerrainGuard.sJoined + (TerrainGuard.waiting ? " (waiting for zone)" : "")
                 + " | objectPass skipped=" + IdlePass.sSkipped + " ran=" + IdlePass.sRan + " (" + IdlePass.State() + ")"
                 + " | combat zeroLook=" + Combat.sZeroLook + " quietLines=" + Combat.sQuiet + " mistSnapshots=" + Combat.sMistSnaps + " mistTests=" + Combat.sMistTests;
             Interlocked.Exchange(ref Alloc.sRentNew, 0); Interlocked.Exchange(ref Alloc.sRentReused, 0); Alloc.sReturned = 0; Alloc.sContacts = 0; Alloc.sZdoSame = Alloc.sZdoSet = 0;
-            MeshKeep.sColKept = MeshKeep.sRenKept = MeshKeep.sColBuilt = MeshKeep.sRenBuilt = 0; IdlePass.sSkipped = IdlePass.sRan = 0;
+            MeshKeep.sColKept = MeshKeep.sRenKept = MeshKeep.sColBuilt = MeshKeep.sRenBuilt = MeshKeep.sForgot = 0; TerrainGuard.sFirst = TerrainGuard.sJoined = 0; IdlePass.sSkipped = IdlePass.sRan = 0;
             Combat.sZeroLook = Combat.sQuiet = Combat.sMistSnaps = 0; Combat.sMistTests = 0;
             return s;
         }
@@ -276,13 +286,16 @@ namespace ValheimPerformanceFixes.Lean
     // ---------------------------------------------------------------------------------------------------- 21. Terrain Mesh Reuse
     internal static class MeshKeep
     {
-        internal static int sColKept, sRenKept, sColBuilt, sRenBuilt;
-        static bool ok;
+        internal static int sColKept, sRenKept, sColBuilt, sRenBuilt, sForgot;
+        static bool ok, paused; static MethodBase mRc, mRr;
+        internal static bool Paused => paused;
+        const string BcoId = "balrond.astafaraios.BalrondCoreOptimizer";
+        static AccessTools.FieldRef<TerrainComp, Heightmap> fTcMap;
         static AccessTools.FieldRef<Heightmap, List<float>> fHeights; static AccessTools.FieldRef<Heightmap, MeshCollider> fCol; static AccessTools.FieldRef<Heightmap, MeshFilter> fFilter;
         static AccessTools.FieldRef<Heightmap, Mesh> fColMesh, fRenMesh; static AccessTools.FieldRef<Heightmap, bool> fDistant; static AccessTools.FieldRef<Heightmap, BiomeSector[]> fCorners;
         sealed class Snap
         {
-            public float[] h = new float[0]; public int n, width; public float scale; public Vector3 pos; public bool col, ren;
+            public float[] h = new float[0], rh = new float[0]; public int colFrame = -1; public int n, width; public float scale; public Vector3 pos; public bool col, ren;
             public BiomeSector c0, c1, c2, c3; public Color32 k0, k1, k2, k3; public WorldGenerator wg;
         }
         static readonly Dictionary<int, Snap> snaps = new Dictionary<int, Snap>();
@@ -305,7 +318,39 @@ namespace ValheimPerformanceFixes.Lean
             h.Patch(rr, prefix: new HarmonyMethod(typeof(MeshKeep), nameof(RenPre)) { priority = Priority.Low }, postfix: new HarmonyMethod(typeof(MeshKeep), nameof(RenPost)));
             h.Patch(clr, postfix: new HarmonyMethod(typeof(MeshKeep), nameof(Forget)));
             h.Patch(od, prefix: new HarmonyMethod(typeof(MeshKeep), nameof(Drop)));
+            mRc = rc; mRr = rr;
+            // a tile's terrain-edit data changed (loaded, saved, or its edit object went away): forget its kept meshes
+            var tc = typeof(TerrainComp); var ld = AccessTools.DeclaredMethod(tc, "Load"); var sv = AccessTools.DeclaredMethod(tc, "Save"); var tod = AccessTools.DeclaredMethod(tc, "OnDestroy");
+            if (AccessTools.DeclaredField(tc, "m_hmap") != null && ld != null && sv != null && tod != null)
+            {
+                fTcMap = AccessTools.FieldRefAccess<TerrainComp, Heightmap>("m_hmap");
+                h.Patch(ld, postfix: new HarmonyMethod(typeof(MeshKeep), nameof(Loaded)));
+                h.Patch(sv, postfix: new HarmonyMethod(typeof(MeshKeep), nameof(Edited)));
+                h.Patch(tod, prefix: new HarmonyMethod(typeof(MeshKeep), nameof(Edited)));
+            }
+            else Lean.L("terrain mesh reuse: terrain-edit hooks not found - forget-on-edit off (height compare still applies)");
             ok = true; Lean.L("terrain mesh reuse patched");
+        }
+        static void Loaded(TerrainComp __instance, bool __result) { if (__result) Edited(__instance); }
+        static void Edited(TerrainComp __instance)
+        {
+            if (!ok || fTcMap == null || Lean.editForgetOn == null || !Lean.editForgetOn.Value || __instance == null) return;
+            var hm = fTcMap(__instance); if (hm == null) return;
+            if (snaps.TryGetValue(hm.GetInstanceID(), out var s) && (s.col || s.ren)) { s.col = s.ren = false; sForgot++; }
+        }
+        // late check, every 2 s: mods that load after this one or add/remove patches while the game runs
+        internal static void Recheck()
+        {
+            if (!ok || mRc == null || mRr == null) return;
+            string who = null; bool bco = false;
+            if (Lean.lateOn.Value)
+            {
+                var o = PG.Others(mRr); foreach (var x in PG.Others(mRc)) if (!o.Contains(x)) o.Add(x);
+                foreach (var x in o) if (x.StartsWith(BcoId, StringComparison.OrdinalIgnoreCase)) bco = true;
+                if (o.Count > 0) who = string.Join(", ", o);
+            }
+            if (who != null && !paused) { paused = true; snaps.Clear(); Lean.L("terrain mesh reuse paused: the terrain rebuild is now also patched by " + who + (bco ? " (terrain mesh cache of another mod)" : "") + "; vanilla rebuilds run"); }
+            else if (who == null && paused) { paused = false; snaps.Clear(); Lean.L("terrain mesh reuse resumed: no other mod patches the terrain rebuild any more"); }
         }
         static void Forget(Heightmap __instance) { if (snaps.TryGetValue(__instance.GetInstanceID(), out var s)) s.col = s.ren = false; }
         static void Drop(Heightmap __instance) { snaps.Remove(__instance.GetInstanceID()); }
@@ -321,9 +366,9 @@ namespace ValheimPerformanceFixes.Lean
         {
             __state = false;
             if (!__runOriginal) return false;
-            if (!ok || !Lean.meshOn.Value) { Forget(__instance); return true; }
+            if (!ok || paused || !Lean.meshOn.Value) { Forget(__instance); return true; }
             var s = Get(__instance);
-            if (s.col && Same(__instance, s)) { sColKept++; return false; }
+            if (s.col && Same(__instance, s)) { s.colFrame = Time.frameCount; sColKept++; return false; }
             s.col = false; s.ren = false; __state = true; return true;
         }
         static bool Same(Heightmap hm, Snap s)
@@ -343,13 +388,13 @@ namespace ValheimPerformanceFixes.Lean
             if (hs == null || hs.Count < n || fColMesh(__instance) == null) return;
             if (s.h.Length != n) s.h = new float[n];
             for (int i = 0; i < n; i++) s.h[i] = hs[i];
-            s.n = n; s.width = __instance.m_width; s.scale = __instance.m_scale; s.pos = __instance.transform.position; s.col = true; s.ren = false; sColBuilt++;
+            s.n = n; s.width = __instance.m_width; s.scale = __instance.m_scale; s.pos = __instance.transform.position; s.col = true; s.ren = false; s.colFrame = Time.frameCount; sColBuilt++;
         }
         static bool RenPre(Heightmap __instance, bool __runOriginal, out bool __state)
         {
             __state = false;
             if (!__runOriginal) return false;
-            if (!ok || !Lean.meshOn.Value) { Forget(__instance); return true; }
+            if (!ok || paused || !Lean.meshOn.Value) { Forget(__instance); return true; }
             var s = Get(__instance);
             if (s.ren && s.col && RenSame(__instance, s)) { sRenKept++; return false; }
             s.ren = false; __state = true; return true;
@@ -361,7 +406,16 @@ namespace ValheimPerformanceFixes.Lean
             // distant tiles colour every vertex from the world generator: always rebuilt
             if (fDistant(hm) || !ReferenceEquals(WorldGenerator.instance, s.wg)) return false;
             if (!Eq(Heightmap.GetBiomeColor(c[0]), s.k0) || !Eq(Heightmap.GetBiomeColor(c[1]), s.k1) || !Eq(Heightmap.GetBiomeColor(c[2]), s.k2) || !Eq(Heightmap.GetBiomeColor(c[3]), s.k3)) return false;
-            return hm.m_width == s.width && hm.m_scale == s.scale;
+            if (hm.m_width != s.width || hm.m_scale != s.scale) return false;
+            if (Lean.renCheckOn.Value)
+            {
+                // own check: the collision check ran in this same rebuild, and the heights still match the ones this render mesh was built from
+                if (s.colFrame != Time.frameCount) return false;
+                var hs = fHeights(hm); int n = s.n; var a = s.rh;
+                if (hs == null || hs.Count < n || a.Length != n) return false;
+                for (int i = 0; i < n; i++) if (hs[i] != a[i]) return false;
+            }
+            return true;
         }
         static void RenPost(Heightmap __instance, bool __state)
         {
@@ -371,7 +425,11 @@ namespace ValheimPerformanceFixes.Lean
             sRenBuilt++;
             if (fDistant(__instance) || c[0] == null || c[1] == null || c[2] == null || c[3] == null) return;
             s.c0 = c[0]; s.c1 = c[1]; s.c2 = c[2]; s.c3 = c[3]; s.wg = WorldGenerator.instance;
-            s.k0 = Heightmap.GetBiomeColor(c[0]); s.k1 = Heightmap.GetBiomeColor(c[1]); s.k2 = Heightmap.GetBiomeColor(c[2]); s.k3 = Heightmap.GetBiomeColor(c[3]); s.ren = true;
+            s.k0 = Heightmap.GetBiomeColor(c[0]); s.k1 = Heightmap.GetBiomeColor(c[1]); s.k2 = Heightmap.GetBiomeColor(c[2]); s.k3 = Heightmap.GetBiomeColor(c[3]);
+            var hs = fHeights(__instance); int n = s.n; if (hs == null || hs.Count < n) return;
+            if (s.rh.Length != n) s.rh = new float[n];
+            for (int i = 0; i < n; i++) s.rh[i] = hs[i];
+            s.ren = true;
         }
         static bool Eq(Color32 a, Color32 b) => a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
     }
@@ -448,6 +506,7 @@ namespace ValheimPerformanceFixes.Lean
             __state = true;
             if (!settled || !Lean.idleOn.Value || (object)__instance != (object)lastScene || rev != lastRev) return true;
             if (Time.realtimeSinceStartup - lastFull >= MaxIdle) return true;
+            if (TerrainGuard.waiting) return true; // a terrain-edit object still waits for its zone: keep running the pass
             var zn = ZNet.instance; var zm = ZDOMan.instance; if (zn == null || zm == null || ZoneSystem.instance == null || Player.m_localPlayer == null) return true;
             var zone = ZoneSystem.GetZone(zn.GetReferencePosition()); if (zone.x != lastX || zone.y != lastY) return true;
             var dist = zn.GetSyncedSimulationDistance(); if (!dist.Equals(lastDist)) return true;
@@ -641,6 +700,94 @@ namespace ValheimPerformanceFixes.Lean
             }
             catch { }
             return n;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------------- 25. Terrain Edit Protection
+    // Each zone keeps its dig/raise/level/paint edits in one terrain-edit object (TerrainComp, "_TerrainCompiler").
+    // LoadEditsFirst: the create pass makes every waiting terrain-edit object (and older TerrainModifier objects) first, outside
+    //   the per-frame object budget, as soon as its zone is loaded and ready for that object type.
+    // JoinExistingEdits: when the game asks a tile for its terrain-edit object and none exists yet, but the zone's object is
+    //   already known, that object is created on the spot so the game finds it instead of making a second, empty one.
+    internal static class TerrainGuard
+    {
+        internal static int sFirst, sJoined; internal static bool waiting;
+        const string SbId = "vpf.ValheimPerformanceFixes.SpawnBudget", FgnGuid = "com.Fire.FiresGhettoNetworkMod", VpoGuid = "com.Skarif.ValheimPerformanceOverhaul_WATER";
+        static Func<ZNetScene, ZDO, GameObject> create;
+        static AccessTools.FieldRef<ZDOMan, List<ZDO>[]> fBySector;
+        static readonly Dictionary<int, bool> kind = new Dictionary<int, bool>();
+        static readonly List<ZDO> tmp = new List<ZDO>();
+        static bool firstBroken, joinBroken;
+
+        internal static void Patch(Harmony h)
+        {
+            var zs = typeof(ZNetScene);
+            var mk = AccessTools.DeclaredMethod(zs, "CreateObject", new[] { typeof(ZDO) });
+            if (mk == null || mk.ReturnType != typeof(GameObject)) { Lean.L("terrain edit protection: ZNetScene.CreateObject not found - off"); return; }
+            create = AccessTools.MethodDelegate<Func<ZNetScene, ZDO, GameObject>>(mk);
+            var co = AccessTools.DeclaredMethod(zs, "CreateObjects", new[] { typeof(List<ZDO>), typeof(List<ZDO>) });
+            if (co != null) { h.Patch(co, prefix: new HarmonyMethod(typeof(TerrainGuard), nameof(FirstPre)) { priority = Priority.First, before = new[] { SbId, FgnGuid, VpoGuid } }); Lean.L("terrain edit protection: edits load first"); }
+            else Lean.L("terrain edit protection: ZNetScene.CreateObjects not found - load-first off");
+            var gc = AccessTools.DeclaredMethod(typeof(Heightmap), "GetAndCreateTerrainCompiler");
+            if (gc != null && AccessTools.DeclaredField(typeof(ZDOMan), "m_objectsBySector") != null)
+            {
+                fBySector = AccessTools.FieldRefAccess<ZDOMan, List<ZDO>[]>("m_objectsBySector");
+                h.Patch(gc, prefix: new HarmonyMethod(typeof(TerrainGuard), nameof(JoinPre)) { priority = Priority.First });
+                Lean.L("terrain edit protection: edits join the existing edit object");
+            }
+            else Lean.L("terrain edit protection: Heightmap.GetAndCreateTerrainCompiler not found - join off");
+        }
+
+        static bool IsTerrain(ZNetScene zs, int hash)
+        {
+            if (hash == 0) return false;
+            if (kind.TryGetValue(hash, out var k)) return k;
+            var pf = zs.GetPrefab(hash);
+            k = pf != null && (pf.GetComponent<TerrainComp>() != null || pf.GetComponent<TerrainModifier>() != null);
+            if (kind.Count > 8192) kind.Clear();
+            kind[hash] = k; return k;
+        }
+
+        static void FirstPre(ZNetScene __instance, List<ZDO> __0, List<ZDO> __1)
+        {
+            waiting = false;
+            if (firstBroken || create == null || Lean.firstOn == null || !Lean.firstOn.Value) return;
+            var zsys = ZoneSystem.instance; if (zsys == null || ZNet.instance == null || ZDOMan.instance == null) return;
+            try { Pass(__instance, zsys, __0); Pass(__instance, zsys, __1); }
+            catch (Exception e) { firstBroken = true; waiting = false; Lean.L("terrain edit protection: load-first threw (" + e.Message + ") - off"); }
+        }
+        static void Pass(ZNetScene zs, ZoneSystem zsys, List<ZDO> l)
+        {
+            if (l == null) return;
+            for (int i = 0; i < l.Count; i++)
+            {
+                var z = l[i];
+                if (z == null || z.Created || !IsTerrain(zs, z.GetPrefab())) continue;
+                var sec = z.GetSector();
+                if (!zsys.IsZoneLoaded(sec) || !zsys.IsZoneReadyForType(sec, z.Type) || Heightmap.FindHeightmap(z.GetPosition()) == null) { waiting = true; continue; }
+                if (create(zs, z) != null) sFirst++;
+            }
+        }
+
+        static void JoinPre(Heightmap __instance)
+        {
+            if (joinBroken || create == null || fBySector == null || Lean.joinOn == null || !Lean.joinOn.Value || __instance == null) return;
+            try
+            {
+                var pos = __instance.transform.position;
+                if (TerrainComp.FindTerrainCompiler(pos) != null) return;
+                var zs = ZNetScene.instance; var zm = ZDOMan.instance; var pf = __instance.m_terrainCompilerPrefab;
+                if (zs == null || zm == null || pf == null) return;
+                int hash = pf.name.GetStableHashCode();
+                var by = fBySector(zm); if (by == null) return;
+                uint k = ZoneSystem.SectorToIndex(ZoneSystem.GetZone(pos)).Sector; if (k >= by.Length) return;
+                var l = by[k]; if (l == null || l.Count == 0) return;
+                tmp.Clear();
+                for (int i = 0; i < l.Count; i++) { var z = l[i]; if (z != null && !z.Created && z.GetPrefab() == hash) tmp.Add(z); }
+                for (int i = 0; i < tmp.Count; i++) if (create(zs, tmp[i]) != null) sJoined++;
+                tmp.Clear();
+            }
+            catch (Exception e) { joinBroken = true; tmp.Clear(); Lean.L("terrain edit protection: join threw (" + e.Message + ") - off"); }
         }
     }
 }

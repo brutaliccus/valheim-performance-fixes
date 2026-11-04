@@ -23,13 +23,22 @@ Everything lives in `BepInEx/config/vpf.ValheimPerformanceFixes.cfg`, sorted by 
 - **0. General … 12. Drop Fixes, Adaptive, Combat Mode, Mod Throttles**: RenderTrim (same section names as before)
 - **13. Map Fog, 14. Distant Terrain, 15. Teleport Terrain Prefetch, 16. Fade Settle**: RenderTrim additions
 - **17. Loading Zones, 18. Terrain Worker**: world loading (client and server)
-- **20. Allocation Cuts, 21. Terrain Mesh Reuse, 22. Object Pass, 23. Combat Housekeeping**: small per-frame savings (client only)
+- **20. Allocation Cuts, 21. Terrain Mesh Reuse, 22. Object Pass, 23. Combat Housekeeping, 25. Terrain Edit Protection**: small per-frame savings and terrain-edit protection (client only)
 - **20. Memory Cleanup Smoothing, 24. Equipment Visual Updates**: garbage collection smoothing and equipment visual update trims (client only)
 - **Spawn Budget - …**: General, Locations, Dungeon, Zones, Heightmap, Arrival, Location Hysteresis, Adaptive, Combat Mode, Diagnostics, Safety, Terrain Collider Bake, Slim Location Models, Location Assets, Drop Queue, Asset Unload
 - **Minimap Cache - …**: General, Diagnostics, 2. Save Hitch Fix
 - **Optional - DropNSpawn Cache - …** / **Optional - Riverheim Cache - …**
 
 ## Versions
+
+### 2.2.1
+
+New features since 2.2.0. Each new feature has its own switch in F1.
+
+**Terrain edit protection**
+- Terrain-edit objects load first: a zone's dig, raise, level and paint edits are created as soon as the zone is ready, ahead of the per-frame object budget, so edits made right after arriving are not lost.
+- Duplicate terrain-edit guard: when you edit ground whose saved edits are known but not loaded yet, they are loaded on the spot and your edit is added to them, instead of the game starting a second, empty copy.
+- Stricter terrain mesh reuse: a kept terrain mesh is checked against the current heights again and is forgotten whenever that tile's edits change. Mesh reuse steps aside while Balrond Core Optimizer's terrain mesh cache, or any other mod's terrain rebuild patch, is active, including one switched on mid-game.
 
 ### 2.2.0
 
