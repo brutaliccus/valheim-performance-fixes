@@ -1,6 +1,6 @@
 # Valheim Performance Fixes
 
-One BepInEx plugin (`vpf.ValheimPerformanceFixes`) for Valheim: fewer frame hitches while exploring, faster joins and fewer save hitches. It merges what used to be five separate plugins. Their behavior is unchanged; they now share one config file and one entry in Configuration Manager.
+One BepInEx plugin (`vpf.ValheimPerformanceFixes`) for Valheim: fewer frame hitches while exploring, faster joins and fewer save hitches.
 
 This repository is **source only**. It does not include Valheim, Unity, BepInEx or third-party mod DLLs.
 
